@@ -126,7 +126,8 @@ b5_1/
 │   ├── inspect_codebase_memory.py # 하네스 Fast Lookup Map 자동 생성기
 │   ├── time_utils.py           # KST 타임스탬프 유틸리티
 │   ├── validate_mermaid_syntax.py # Mermaid 문법 자동 검증기
-│   └── validate_rules_sync.py  # 규칙 파일 100% 동기화 자동 검증기
+│   ├── validate_rules_sync.py  # 규칙 파일 100% 동기화 자동 검증기
+│   └── scaffold_assignment_harness.py # 새 과제 하네스 일괄 자동 구축 도구
 │
 └── study/                      # 프로젝트 구조 및 학습 가이드 디렉터리
     ├── AGENTS.md               # study 전용 규칙 파일
@@ -269,6 +270,7 @@ b5_1/
 - **[`utils/validate_mermaid_syntax.py`](file:///Users/mpeg46551/b5_1/utils/validate_mermaid_syntax.py)**: 마크다운 내 Mermaid 다이어그램의 엣지 라벨 괄호 및 문법 오류 자동 검사.
 - **[`utils/inspect_codebase_memory.py`](file:///Users/mpeg46551/b5_1/utils/inspect_codebase_memory.py)**: 하네스 엔지니어링 전용 Fast Lookup Map(코드베이스 색인표) 자동 생성기.
 - **[`utils/time_utils.py`](file:///Users/mpeg46551/b5_1/utils/time_utils.py)**: KST 타임스탬프(`YYYY-MM-DD HH:MM:SS KST`) 생성 도구.
+- **[`utils/scaffold_assignment_harness.py`](file:///Users/mpeg46551/b5_1/utils/scaffold_assignment_harness.py)**: 새로운 과제 디렉터리에 듀얼 규칙, 하네스 검증 도구, 표준 폴더, QA/학습 문서 스켈레톤을 1초 만에 자동 구축하는 범용 스캐폴더.
 
 ---
 

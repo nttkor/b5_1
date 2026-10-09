@@ -42,6 +42,7 @@ FILE_METADATA = {
     "utils/inspect_codebase_memory.py": ("하네스 색인 생성기", "Fast Lookup Map 생성 및 파일 트리 색인 자동화"),
     "utils/time_utils.py": ("시간 유틸리티", "KST 타임스탬프 생성 및 ISO 포맷 변환"),
     "utils/README.md": ("유틸리티 패키지 안내서", "재사용 툴 및 하네스 엔지니어링 스크립트 가이드"),
+    "utils/scaffold_assignment_harness.py": ("하네스 스캐폴더", "새 과제 디렉터리에 듀얼 규칙, 하네스 도구, 표준 폴더, QA/학습 문서 일괄 구축"),
     "utils/GEMINI.md": ("utils 전용 규칙", "공통 툴 관리 및 듀얼 동기화 규칙 (AGENTS.md와 동기화)"),
     "utils/AGENTS.md": ("utils 전용 규칙", "공통 툴 관리 및 듀얼 동기화 규칙 (GEMINI.md와 동기화)"),
 }

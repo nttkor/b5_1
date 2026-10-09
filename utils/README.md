@@ -20,6 +20,7 @@
 | [`validate_rules_sync.py`](file:///Users/mpeg46551/b5_1/utils/validate_rules_sync.py) | `GEMINI.md`와 `AGENTS.md` 파일 쌍(총 5개 디렉터리)의 100% 동일 동기화 여부를 자동 검수하고 필요 시 자동 복구(`--fix`) | `python3 utils/validate_rules_sync.py [--fix]` |
 | [`validate_mermaid_syntax.py`](file:///Users/mpeg46551/b5_1/utils/validate_mermaid_syntax.py) | 마크다운 내 Mermaid 다이어그램에서 엣지 라벨(`\|...\|`) 괄호 등 파서 오류 유발 문법을 전수 자동 검사 | `python3 utils/validate_mermaid_syntax.py [path]` |
 | [`inspect_codebase_memory.py`](file:///Users/mpeg46551/b5_1/utils/inspect_codebase_memory.py) | 전체 코드베이스의 구조와 책임 심볼을 색인화하여 Fast Lookup Map 마크다운 테이블 자동 생성 | `python3 utils/inspect_codebase_memory.py` |
+| [`scaffold_assignment_harness.py`](file:///Users/mpeg46551/b5_1/utils/scaffold_assignment_harness.py) | 새 과제 디렉터리에 듀얼 규칙, 하네스 도구, 표준 폴더, QA/학습 문서 템플릿 일괄 자동 구축 | `python3 utils/scaffold_assignment_harness.py --target-dir <경로> --name <과제명>` |
 | [`time_utils.py`](file:///Users/mpeg46551/b5_1/utils/time_utils.py) | KST(한국 표준시) 포맷팅 문자열 생성 (`YYYY-MM-DD HH:MM:SS KST`) | `python3 utils/time_utils.py` |
 
 ---
@@ -56,6 +57,12 @@ python3 utils/inspect_codebase_memory.py
 보고 표준에 필요한 KST 타임스탬프를 출력합니다:
 ```bash
 python3 utils/time_utils.py
+```
+
+### ⑤ 새 과제 하네스 일괄 자동 구축 (`scaffold_assignment_harness.py`)
+새로운 과제 디렉터리에 듀얼 규칙, 하네스 도구, 표준 폴더, QA/학습 문서 템플릿을 단 한 번의 명령으로 일괄 구축합니다:
+```bash
+python3 utils/scaffold_assignment_harness.py --target-dir <대상경로> --name <과제식별자>
 ```
 
 ---
