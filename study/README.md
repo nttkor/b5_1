@@ -302,33 +302,63 @@ flowchart TD
     Output --> Prompt
 ```
 
+---
+
 #### ② 체이닝 해시맵 모듈 실행도 (`src/hashmap.py`)
-`put(key, value)`의 djb2 해시 계산, 체이닝 리스트 탐색, 로드팩터 0.75 확장 리사이즈 및 `get(key)` 탐색 흐름입니다.
+
+##### [2-A] HashMap.put(key, value) 실행도
+djb2 다항 해시 계산, 체이닝 버킷 순회, 키 존재 시 값 갱신, 미존재 시 `insert_back` 및 로드 팩터 0.75 초과 시 2배 리사이즈/재해싱 전체 흐름입니다.
 
 ```mermaid
 flowchart TD
-    subgraph PUT ["HashMap.put(key, value) 흐름"]
-        P_Start(["put 호출"]) --> P_Hash["djb2 다항 해시 계산 및 버킷 인덱스 결정"]
-        P_Hash --> P_Bucket["해당 인덱스의 DoublyLinkedList 순회"]
-        P_Bucket --> P_Exists{"기존 Key 존재?"}
-        P_Exists -->|Yes| P_Update["기존 노드의 _Pair.value 갱신"]
-        P_Exists -->|No| P_Insert["버킷 리스트 뒤에 새 _Pair 삽입 (insert_back)"]
-        P_Insert --> P_Inc["size 1 증가"]
-        P_Inc --> P_LoadCheck{"로드팩터 > 0.75 ?"}
-        P_LoadCheck -->|Yes| P_Resize["_resize: 버킷 2배 확장 & 전체 재해싱"]
-        P_LoadCheck -->|No| P_End(["put 종료"])
-        P_Update --> P_End
-        P_Resize --> P_End
-    end
-
-    subgraph GET ["HashMap.get(key) 흐름"]
-        G_Start(["get 호출"]) --> G_Hash["djb2 다항 해시 계산 및 버킷 인덱스 결정"]
-        G_Hash --> G_Bucket["해당 버킷의 DoublyLinkedList 순회"]
-        G_Bucket --> G_Found{"일치하는 Key 발견?"}
-        G_Found -->|Yes| G_RetVal["해당 _Pair.value 반환"]
-        G_Found -->|No| G_RetDef["기본값 (None) 반환"]
-    end
+    Start(["HashMap.put(key, value) 시작"]) --> HashCalc["djb2 해시 함수 호출: _hash_key(key, capacity)"]
+    HashCalc --> BucketIdx["버킷 인덱스 계산: h % capacity"]
+    BucketIdx --> SelectBucket["해당 버킷의 DoublyLinkedList 선택"]
+    SelectBucket --> IterList["버킷 연결 리스트의 노드 순회 시작"]
+    
+    IterList --> FoundCheck{"현재 노드의 _Pair.key == key ?"}
+    FoundCheck -->|일치하는 키 발견| UpdateVal["기존 _Pair.value 갱신"]
+    UpdateVal --> End(["put 완료"])
+    
+    FoundCheck -->|불일치| NextNode{"다음 노드 존재?"}
+    NextNode -->|Yes| IterList
+    NextNode -->|No (리스트 끝 도달)| CreatePair["새 _Pair(key, value) 객체 생성"]
+    
+    CreatePair --> InsertBack["버킷 리스트 맨 뒤에 삽입: insert_back(pair)"]
+    InsertBack --> IncSize["_size 1 증가"]
+    IncSize --> LoadFactorCheck{"로드 팩터 검사:\n(_size / _capacity) > 0.75 ?"}
+    
+    LoadFactorCheck -->|초과 (Yes)| ResizeCall["_resize(capacity * 2) 호출"]
+    ResizeCall --> NewBuckets["2배 크기의 신규 버킷 배열 생성"]
+    NewBuckets --> Rehash["기존 모든 _Pair를 새 용량 기준으로 재해싱하여 재배치"]
+    Rehash --> End
+    
+    LoadFactorCheck -->|이하 (No)| End
 ```
+
+##### [2-B] HashMap.get(key) 및 remove(key) 실행도
+djb2 해시를 통해 버킷을 특정하고, 연결 리스트를 순회하여 키를 탐색하고 값을 반환하거나 노드를 분리 삭제하는 흐름입니다.
+
+```mermaid
+flowchart TD
+    Start(["HashMap.get(key) / remove(key) 시작"]) --> HashCalc["djb2 해시 함수 호출: _hash_key(key, capacity)"]
+    HashCalc --> BucketIdx["버킷 인덱스 결정: h % capacity"]
+    BucketIdx --> SelectBucket["해당 인덱스 버킷(DoublyLinkedList) 순회"]
+    
+    SelectBucket --> CheckNode{"버킷 내 노드의 _Pair.key == key ?"}
+    CheckNode -->|일치하는 노드 발견| ActionCheck{"요청된 동작 구분"}
+    
+    ActionCheck -->|get(key) 호출인 경우| ReturnVal["해당 _Pair.value 반환"]
+    ActionCheck -->|remove(key) 호출인 경우| DeleteNode["버킷 리스트에서 노드 분리: remove_node(curr)"]
+    DeleteNode --> DecSize["_size 1 감소 및 True 반환"]
+    
+    CheckNode -->|불일치 & 다음 노드 존재| CheckNode
+    CheckNode -->|리스트 끝까지 미발견| NotFound["키 미존재 처리"]
+    
+    NotFound --> RetDefault["get: default(None) 반환\nremove: False 반환"]
+```
+
+---
 
 #### ③ Sentinel 이중 연결 리스트 모듈 실행도 (`src/doubly_linked_list.py`)
 더미 head/tail 기반으로 None 분기 없는 $O(1)$ 삽입, 삭제, 앞으로 이동(`move_to_front`) 메커니즘입니다.
@@ -361,60 +391,142 @@ flowchart TD
     end
 ```
 
+---
+
 #### ④ TTL 최소 힙 모듈 실행도 (`src/heap.py`)
-배열 기반 완전 이진 트리에서 `(expire_at, key, version)` 튜플을 $O(\log N)$으로 관리하는 `push` 및 `pop` 알고리즘입니다.
+
+##### [4-A] MinHeap.push(item) 실행도
+배열 끝에 원소를 추가하고 부모 노드와 만료 시각을 비교하며 루트 방향으로 거슬러 올라가는 상향 힙화(`_heapify_up`) 흐름입니다.
 
 ```mermaid
 flowchart TD
-    subgraph PUSH ["MinHeap.push(item) - O(log N)"]
-        PU_1["배열 끝에 원소 추가 (data.append)"] --> PU_2["_heapify_up 시작 (현재 인덱스)"]
-        PU_2 --> PU_3{"부모 노드와 expire_at 비교"}
-        PU_3 -->|"자식이 더 작음"| PU_4["부모와 자식 위치 교환 (swap) 후 상향 이동"]
-        PU_4 --> PU_3
-        PU_3 -->|"부모가 더 작거나 루트 도달"| PU_Done(["push 완료"])
-    end
-
-    subgraph POP ["MinHeap.pop() - O(log N)"]
-        PO_1["루트(인덱스 0) 최솟값 보관"] --> PO_2["배열 맨 끝 원소를 루트(0번)로 이동"]
-        PO_2 --> PO_3["_heapify_down 시작 (루트부터 하향)"]
-        PO_3 --> PO_4{"자식 노드들과 expire_at 비교"}
-        PO_4 -->|"더 작은 자식이 존재"| PO_5["더 작은 자식과 위치 교환 (swap) 후 하향 이동"]
-        PO_5 --> PO_4
-        PO_4 -->|"자식보다 작거나 리프 도달"| PO_Done["보관된 최솟값 반환"]
-    end
+    Start(["MinHeap.push(item) 호출\nitem = (expire_at, key, version)"]) --> Append["배열 맨 끝에 원소 추가: self._data.append(item)"]
+    Append --> InitIdx["현재 인덱스 설정: idx = len(_data) - 1"]
+    InitIdx --> HeapifyUp["_heapify_up(idx) 루프 시작"]
+    
+    HeapifyUp --> RootCheck{"idx > 0 인가? (루트 여부)"}
+    RootCheck -->|루트 도달 (No)| Done(["push 완료 (힙 속성 만족)"])
+    
+    RootCheck -->|루트 아님 (Yes)| ParentIdx["부모 인덱스 계산: parent = (idx - 1) // 2"]
+    ParentIdx --> Compare{"_data[idx].expire_at <\n_data[parent].expire_at ?"}
+    
+    Compare -->|자식이 더 작음 (위반)| Swap["부모와 현재 노드 swap:\n_data[idx], _data[parent] 교환"]
+    Swap --> MoveUp["현재 인덱스 상향 이동: idx = parent"]
+    MoveUp --> HeapifyUp
+    
+    Compare -->|부모가 더 작거나 같음 (정상)| Done
 ```
 
-#### ⑤ 통합 스토리지 엔진 모듈 실행도 (`src/store.py`)
-`SET` 시의 OOM 검사, 버전 태깅, 메모리 계산 및 LRU Eviction 루프와 `GET` 시의 Lazy TTL 검증 및 LRU 이동 흐름입니다.
+##### [4-B] MinHeap.pop() 실행도
+루트(최솟값)를 꺼내고 마지막 노드를 루트로 옮긴 뒤, 더 작은 자식과 비교/교환하며 내려가는 하향 힙화(`_heapify_down`) 흐름입니다.
 
 ```mermaid
 flowchart TD
-    subgraph SET_FLOW ["SET key value 실행 흐름"]
-        S_Start(["SET 호출"]) --> S_Clean["_cleanup_expired: 만료 키 정리"]
-        S_Clean --> S_OOMCheck{"(단일 key+value 크기) > maxmemory ?"}
-        S_OOMCheck -->|Yes| S_OOM["OOMError 발생 (저장 거부)"]
-        S_OOMCheck -->|No| S_Lookup["HashMap에서 기존 키 조회"]
+    Start(["MinHeap.pop() 호출"]) --> EmptyCheck{"self._data가 비어있는가?"}
+    EmptyCheck -->|Yes| IndexError["IndexError 예외 발생"]
+    
+    EmptyCheck -->|No| OneItemCheck{"원소가 1개뿐인가?"}
+    OneItemCheck -->|Yes| PopOnly["단일 원소 pop() 반환"]
+    
+    OneItemCheck -->|2개 이상| SaveRoot["루트(인덱스 0) 최솟값 보관: root = _data[0]"]
+    SaveRoot --> MoveLastToRoot["배열 맨 끝 원소를 루트 위치에 대입:\n_data[0] = _data.pop()"]
+    MoveLastToRoot --> InitDown["idx = 0 설정 후 _heapify_down(0) 시작"]
+    
+    InitDown --> CalcChild["자식 인덱스 계산:\nleft = 2 * idx + 1\nright = 2 * idx + 2"]
+    CalcChild --> LeftExist{"left < len(_data) ? (자식 존재 여부)"}
+    
+    LeftExist -->|자식 없음 (리프)| ReturnRoot(["보관해둔 root 반환 (pop 완료)"])
+    
+    LeftExist -->|자식 존재| FindSmallest["left와 right 중 expire_at이 더 작은 자식을 smallest로 선택"]
+    FindSmallest --> CompareDown{"_data[smallest].expire_at <\n_data[idx].expire_at ?"}
+    
+    CompareDown -->|자식이 더 작음 (위반)| SwapDown["_data[idx]와 _data[smallest] 교환"]
+    SwapDown --> MoveDown["idx = smallest로 하향 이동"]
+    MoveDown --> InitDown
+    
+    CompareDown -->|현재 노드가 더 작거나 같음 (정상)| ReturnRoot
+```
+
+---
+
+#### ⑤ 통합 스토리지 엔진 모듈 실행도 (`src/store.py`)
+
+##### [5-A] SET key value 실행도 (OOM, 메모리 산정, LRU 방출 루프)
+만료 키 청소, 단일 항목 OOM 방어, 기존 키 Overwrite 시 TTL 무효화 및 메모리 계산, LRU tail 방출 루프 전체 흐름입니다.
+
+```mermaid
+flowchart TD
+    Start(["SET key value 호출"]) --> Clean["만료된 키 힙 정리: _cleanup_expired()"]
+    Clean --> CalcEntryMem["신규 엔트리 크기 계산:\nnew_mem = len(utf8(key)) + len(utf8(value))"]
+    
+    CalcEntryMem --> OOMCheck{"maxmemory > 0 이고\nnew_mem > maxmemory ?"}
+    OOMCheck -->|단일 항목 메모리 초과| OOMErr["OOMError 발생 (데이터 저장 거부)"]
+    
+    OOMCheck -->|저장 가능 (정상)| Lookup["HashMap.get(key) 기존 엔트리 조회"]
+    Lookup --> ExistsCheck{"기존 키가 이미 존재하는가?"}
+    
+    ExistsCheck -->|기존 키 존재 (Overwrite)| UpdateBranch["1. 기존 메모리 차감: used_memory -= old_mem\n2. TTL 초기화: entry.expire_at = None\n3. 힙 원소 무효화: entry.ttl_version += 1\n4. 값 갱신: entry.value = value\n5. LRU 갱신: DLL.move_to_front(entry.lru_node)"]
+    
+    ExistsCheck -->|신규 키 (New Key)| InsertBranch["1. LRU 리스트 앞단에 노드 삽입: lru_node = DLL.insert_front(key)\n2. _Entry 객체 생성 (value, lru_node 등)\n3. HashMap.put(key, entry) 등록"]
+    
+    UpdateBranch --> AddMem["메모리 사용량 증가:\nused_memory += new_mem"]
+    InsertBranch --> AddMem
+    
+    AddMem --> EvictLoopCheck{"maxmemory > 0 이고\nused_memory > maxmemory ?"}
+    
+    EvictLoopCheck -->|용량 초과 상태 (Yes)| EvictAction["1. LRU 리스트 꼬리에서 제거: victim = DLL.remove_back()\n2. 해당 victim 키에 대해 self.delete(victim) 수행\n3. evicted_keys 누적 카운트 1 증가"]
+    EvictAction --> EvictLoopCheck
+    
+    EvictLoopCheck -->|용량 정상 (No)| RetOK(["OK 결과 반환"])
+```
+
+##### [5-B] GET key 실행도 (Lazy TTL 검증, O(1) LRU 갱신)
+해시맵 조회 후 만료 시 삭제 및 (nil) 반환(LRU 미갱신), 유효 시 $O(1)$ LRU front 이동 및 값 반환 흐름입니다.
+
+```mermaid
+flowchart TD
+    Start(["GET key 호출"]) --> Lookup["HashMap.get(key)로 _Entry 조회"]
+    Lookup --> ExistCheck{"엔트리가 존재하는가?"}
+    
+    ExistCheck -->|미존재 (None)| RetNil(["(nil) 반환"])
+    
+    ExistCheck -->|존재| TTLCheck{"entry.expire_at이 설정되어 있고\n현재 시각 >= entry.expire_at ?"}
+    
+    TTLCheck -->|만료됨 (Expired)| LazyDelete["1. delete(key) 호출하여 모든 구조에서 제거\n2. (중요: LRU 갱신은 수행하지 않음)"]
+    LazyDelete --> RetNil
+    
+    TTLCheck -->|유효함 (Valid)| UpdateLRU["LRU 순서 최신화:\nDLL.move_to_front(entry.lru_node)"]
+    UpdateLRU --> RetVal(["entry.value 값 반환"])
+```
+
+##### [5-C] EXPIRE key seconds 및 TTL key 실행도 (Lazy Deletion 메커니즘)
+`ttl_version` 증가를 통한 힙 원소의 논리적 무효화와 남은 만료 시간 계산 흐름입니다.
+
+```mermaid
+flowchart TD
+    subgraph EXPIRE_EXEC ["EXPIRE key seconds 실행 흐름"]
+        E_Start(["EXPIRE 호출"]) --> E_Lookup["HashMap.get(key) 조회"]
+        E_Lookup --> E_Exist{"키 존재 여부"}
+        E_Exist -->|미존재| E_RetZero(["(integer) 0 반환"])
         
-        S_Lookup --> S_Exists{"기존 키 존재?"}
-        S_Exists -->|Yes| S_Update["기존 메모리 차감\n기존 TTL 무효화 (ttl_version + 1)\nLRU 노드 값 갱신 후 move_to_front"]
-        S_Exists -->|No| S_Insert["새 _Entry 생성\nHashMap.put 등록\nDLL.insert_front로 LRU 노드 생성"]
+        E_Exist -->|존재| E_SecCheck{"seconds <= 0 ?"}
+        E_SecCheck -->|즉시 만료| E_Del["delete(key) 수행 후 (integer) 1 반환"]
         
-        S_Update --> S_MemAdd["used_memory += 신규 메모리"]
-        S_Insert --> S_MemAdd
-        
-        S_MemAdd --> S_EvictLoop{"maxmemory > 0 이고\nused_memory > maxmemory ?"}
-        S_EvictLoop -->|Yes| S_Evict["DLL.remove_back()으로 LRU 키 추출\n해당 키 삭제 및 메모리 차감\nevicted_keys 1 증가"]
-        S_Evict --> S_EvictLoop
-        S_EvictLoop -->|No| S_Done(["OK 반환"])
+        E_SecCheck -->|정상 시간 설정| E_SetTTL["1. expire_at = 현재시각 + seconds\n2. entry.ttl_version 1 증가 (기존 힙 항목 무효화)\n3. entry.expire_at = expire_at\n4. MinHeap.push((expire_at, key, version))\n5. (integer) 1 반환"]
     end
 
-    subgraph GET_FLOW ["GET key 실행 흐름"]
-        G_Start(["GET 호출"]) --> G_GetEntry["HashMap에서 _Entry 조회"]
-        G_GetEntry --> G_Check{"엔트리 존재 여부"}
-        G_Check -->|미존재| G_Nil(["(nil) 반환"])
-        G_Check -->|존재| G_TTLCheck{"만료 시간 경과 여부"}
-        G_TTLCheck -->|만료됨| G_Expired["delete(key) 수행\n(LRU 갱신 생략)"] --> G_Nil
-        G_TTLCheck -->|유효함| G_LRU["DLL.move_to_front(entry.lru_node)\n(LRU 최근 접근 갱신)"] --> G_Val(["value 반환"])
+    subgraph TTL_EXEC ["TTL key 실행 흐름"]
+        T_Start(["TTL 호출"]) --> T_Lookup["HashMap.get(key) 조회"]
+        T_Lookup --> T_Exist{"키 존재 여부"}
+        T_Exist -->|미존재| T_RetNeg2(["(integer) -2 반환 (키 없음)"])
+        
+        T_Exist -->|존재| T_HasTTL{"entry.expire_at 설정 여부"}
+        T_HasTTL -->|만료 시간 없음| T_RetNeg1(["(integer) -1 반환 (만료 없음)"])
+        
+        T_HasTTL -->|만료 시간 있음| T_CalcRemaining["남은 시간 계산:\nremaining = int(entry.expire_at - 현재시각)"]
+        T_CalcRemaining --> T_RemainCheck{"remaining <= 0 ?"}
+        T_RemainCheck -->|이미 만료됨| T_ExpireNow["delete(key) 수행 후 (integer) -2 반환"]
+        T_RemainCheck -->|남은 시간 유효| T_RetRem(["(integer) remaining 초 반환"])
     end
 ```
 
