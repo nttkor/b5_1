@@ -3,6 +3,12 @@
 본 문서는 [`docs/b5_1_mission.md`](file:///Users/mpeg46551/b5_1/docs/b5_1_mission.md)의 미션 요구사항, 과제 목표, 기능 명세에 대한 심층 기술 답변서입니다.  
 모든 구현 항목은 Python 내장 컬렉션(`dict`, `set`, `collections`)을 일체 배제하고 밑바닥부터 직접 구현되었으며, 각 답변에는 해당 소스코드의 상대 경로 링크가 포함되어 있습니다.
 
+> 💡 **연관 핵심 문서 상호 링크**:
+> - 📚 **핵심 개념 및 기술 용어 백과사전**: [`study/study.md`](../study/study.md)
+> - 🎯 **종합 평가문항 답변서**: [`docs/b5_1_eval_QA.md`](b5_1_eval_QA.md)
+> - 📖 **프로젝트 메인 안내서**: [`README.md`](../README.md)
+> - 🏗️ **아키텍처 및 상세 실행도**: [`study/README.md`](../study/README.md)
+
 ---
 
 ## 1. 미션 목적 및 개요

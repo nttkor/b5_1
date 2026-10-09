@@ -131,6 +131,7 @@ b5_1/
 └── study/                      # 프로젝트 구조 및 학습 가이드 디렉터리
     ├── AGENTS.md               # study 전용 규칙 파일
     ├── GEMINI.md               # study 전용 규칙 파일
+    ├── study.md                # 핵심 개념 및 기술 용어 백과사전
     └── README.md               # 본 문서 (프로젝트 개요, 상세, 구현기능, 폴더 트리 종합)
 ```
 
@@ -241,6 +242,9 @@ b5_1/
 
 #### [README.md](file:///Users/mpeg46551/b5_1/README.md)
 - 프로젝트 시작 가이드, 실행 커맨드, 아키텍처 요약.
+
+#### [study/study.md](file:///Users/mpeg46551/b5_1/study/study.md)
+- 자료구조, djb2 해시, 체이닝, 로드 팩터, 최소 힙, LRU/LFU, TTL 지연 삭제, 메모리 회계 등 미션 및 평가 전반의 핵심 개념 및 기술 용어 백과사전.
 
 #### [READYOU.md](file:///Users/mpeg46551/b5_1/READYOU.md)
 - 구술 평가 질문에 대비하여 실제 작성된 소스 코드를 인용하며 논리적 답변을 서술한 핵심 설명 문서.
