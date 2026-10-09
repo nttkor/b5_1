@@ -116,6 +116,16 @@ b5_1/
 │   ├── b5_2_Redis_eval.md      # 구술/실기 평가표 마크다운 변환본
 │   └── b5_2_Redis_eval.pdf     # 원본 구술/실기 평가표 PDF (보존)
 │
+├── utils/                      # 하네스 엔지니어링 및 재사용 공통 유틸리티 패키지
+│   ├── __init__.py             # 패키지 식별자
+│   ├── AGENTS.md               # utils 전용 규칙 파일
+│   ├── GEMINI.md               # utils 전용 규칙 파일
+│   ├── README.md               # 유틸리티 도구 상세 매뉴얼
+│   ├── inspect_codebase_memory.py # 하네스 Fast Lookup Map 자동 생성기
+│   ├── time_utils.py           # KST 타임스탬프 유틸리티
+│   ├── validate_mermaid_syntax.py # Mermaid 문법 자동 검증기
+│   └── validate_rules_sync.py  # 규칙 파일 100% 동기화 자동 검증기
+│
 └── study/                      # 프로젝트 구조 및 학습 가이드 디렉터리
     ├── AGENTS.md               # study 전용 규칙 파일
     ├── GEMINI.md               # study 전용 규칙 파일
@@ -238,6 +248,18 @@ b5_1/
 - **[src/GEMINI.md](file:///Users/mpeg46551/b5_1/src/GEMINI.md) / [src/AGENTS.md](file:///Users/mpeg46551/b5_1/src/AGENTS.md)**: `src/` 모듈 전용 규칙. 내장 컬렉션 금지 및 $O(1)$ 복잡도 보존 지침.
 - **[docs/GEMINI.md](file:///Users/mpeg46551/b5_1/docs/GEMINI.md) / [docs/AGENTS.md](file:///Users/mpeg46551/b5_1/docs/AGENTS.md)**: `docs/` 디렉터리 전용 규칙. PDF 불변 및 마크다운 정합성 유지 지침.
 - **[study/GEMINI.md](file:///Users/mpeg46551/b5_1/study/GEMINI.md) / [study/AGENTS.md](file:///Users/mpeg46551/b5_1/study/AGENTS.md)**: `study/` 디렉터리 전용 규칙. 학습 및 문서화 일관성 유지 지침.
+- **[utils/GEMINI.md](file:///Users/mpeg46551/b5_1/utils/GEMINI.md) / [utils/AGENTS.md](file:///Users/mpeg46551/b5_1/utils/AGENTS.md)**: `utils/` 디렉터리 전용 규칙. 하네스 도구 및 자동화 검증 스크립트 관리 지침.
+
+---
+
+### 5.5 하네스 엔지니어링 및 재사용 공통 유틸리티 (`utils/`)
+
+프롬프트 실행 시 반복적인 전수 스캔(Full Scan)을 차단하고 0초 직행 색인 및 자동 검수를 수행하기 위한 전용 도구 모음입니다 ([utils/README.md](file:///Users/mpeg46551/b5_1/utils/README.md) 참조).
+
+- **[`utils/validate_rules_sync.py`](file:///Users/mpeg46551/b5_1/utils/validate_rules_sync.py)**: 전체 디렉터리의 `GEMINI.md`와 `AGENTS.md` 상호 100% 동기화 자동 검수 및 복구(`--fix`).
+- **[`utils/validate_mermaid_syntax.py`](file:///Users/mpeg46551/b5_1/utils/validate_mermaid_syntax.py)**: 마크다운 내 Mermaid 다이어그램의 엣지 라벨 괄호 및 문법 오류 자동 검사.
+- **[`utils/inspect_codebase_memory.py`](file:///Users/mpeg46551/b5_1/utils/inspect_codebase_memory.py)**: 하네스 엔지니어링 전용 Fast Lookup Map(코드베이스 색인표) 자동 생성기.
+- **[`utils/time_utils.py`](file:///Users/mpeg46551/b5_1/utils/time_utils.py)**: KST 타임스탬프(`YYYY-MM-DD HH:MM:SS KST`) 생성 도구.
 
 ---
 

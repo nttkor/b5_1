@@ -30,15 +30,17 @@
 
 ### 5. 전역 규칙 파일 상호 동기화 관리 (Dual Rule Synchronization)
 - `GEMINI.md`와 `AGENTS.md` 두 파일은 100% 동일한 내용으로 상시 자동 동기화를 유지한다.
-- 한 파일이 수정되면 즉시 다른 파일도 동일하게 반영한다.
+- 한 파일이 수정되면 즉시 다른 파일도 동일하게 반영한다 (`utils/validate_rules_sync.py`로 상시 검증).
 
-### 6. 공통 유틸리티 재사용 원칙 (Reusable Utils)
-- 프롬프트 처리 시 매번 일회성 파이썬 코드를 즉석 생성하지 않고, 재사용 가능한 유틸리티(`backend/app/utils/` 또는 프로젝트 공통 모듈)에 모듈화하여 재활용한다.
+### 6. 공통 유틸리티 재사용 및 자산화 원칙 (Reusable Utils & Assetization)
+- 프롬프트 처리 시 매번 일회성 파이썬 코드를 즉석 생성하지 않고, 재사용 가능한 유틸리티(`utils/` 패키지)에 모듈화하여 지속 자산화한다.
+- 생성된 툴은 `utils/README.md`에 명세를 문서화하여 영구 재활용한다.
 - 중복 로직 구현을 지양하고 단일 진실 공급원(Single Source of Truth)을 유지한다.
 
-### 7. 작업 메모리(아티팩트) 우선 참조 원칙 (Memory First Execution)
-- 새로운 작업 시 `find`, `grep` 등으로 전체 리포지토리를 매번 반복 스캔하지 않는다.
-- 안티그래비티 자체 작업 메모리(`activity_log.md`)를 최우선 참조하여 즉시 목적 파일로 직행한다.
+### 7. 하네스 엔지니어링 및 작업 메모리 우선 참조 (Harness Engineering & Memory First)
+- **전수 스캔 금지**: 프롬프트 실행 시마다 리포지토리 전체 디렉터리를 `find`, `grep` 등으로 전수 스캔(Full Scan)하는 비효율을 엄격히 배제한다.
+- **색인 맵 직행**: 안티그래비티 자체 작업 메모리(`activity_log.md`)와 `utils/inspect_codebase_memory.py`가 제공하는 **Fast Lookup Map(코드베이스 색인표)**을 최우선 참조하여 목적 파일로 즉각(0초) 직행한다.
+- **스캐폴딩 동기화**: 파일 구조나 작업 이력이 갱신될 때마다 작업 메모리를 즉시 동기화하여 컨텍스트를 유지한다.
 
 ---
 
@@ -50,11 +52,13 @@
 
 ---
 
-## 3. 재사용 공통 유틸리티 패키지 (backend/app/utils/)
+## 3. 재사용 공통 유틸리티 패키지 (utils/)
 
-매번 인라인 파이썬 코드를 짜지 않고 재활용할 수 있도록 모듈화된 유틸리티 모음:
-- `datetime_utils.py`: UTC <-> KST 변환, ISO 8601 포맷팅, KST 타임스탬프 생성
-- `db_utils.py`: `get_table_counts()`(레코드 수 집계), `inspect_db_schema()`(스키마 인스펙션), `get_user_summary()`(사용자 통계)
+프롬프트 임무 수행 중 모듈화된 하네스 엔지니어링 및 검수 자동화 도구 모음 (`utils/README.md` 참조):
+- `validate_rules_sync.py`: 모든 디렉터리의 `GEMINI.md`와 `AGENTS.md` 100% 동기화 자동 검수 및 복구(`--fix`)
+- `validate_mermaid_syntax.py`: 마크다운 내 Mermaid 다이어그램 엣지 라벨 파싱 에러 방지 자동 검사
+- `inspect_codebase_memory.py`: 하네스 엔지니어링 전용 Fast Lookup Map 마크다운 테이블 자동 생성
+- `time_utils.py`: KST 타임스탬프 생성 및 ISO 포맷 변환
 
 ---
 
