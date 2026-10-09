@@ -230,6 +230,9 @@ flowchart LR
   - 면접관 구술 질문에 대비하여 실제 코드를 인용하며 논리적 답변을 서술한 핵심 설명서.
 - 🛠️ **하네스 엔지니어링 패키지 안내서**: [`utils/README.md`](utils/README.md)
   - 규칙 파일 동기화, Mermaid 파서 검증, Fast Lookup Map 색인 생성 도구 가이드.
+- 🧰 **과제 자동화 턴키 하네스 키트**: [`harness/README.md`](harness/README.md)
+  - 새 과제 시작 시 단 1개 폴더 복사 및 1초 실행으로 5쌍 듀얼 규칙, 검증 도구, QA 템플릿을 즉시 세팅하는 올인원 패키지.
+
 
 ---
 
