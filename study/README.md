@@ -248,17 +248,17 @@ Mini Redis의 전반적인 처리 흐름은 CLI 파싱 ➔ 스토어 엔진 ➔ 
 
 ```mermaid
 flowchart TD
-    User(["사용자 (User)"]) -->|"입력 (CLI 명령어)"| CLI["CLI 모듈 (src/cli.py)"]
-    CLI -->|"파싱 및 인자 검증"| Store["스토리지 엔진 (src/store.py)"]
+    User(["사용자 - User"]) -->|CLI 명령어 입력| CLI["CLI 모듈 (src/cli.py)"]
+    CLI -->|파싱 및 유효성 검증| Store["스토리지 엔진 (src/store.py)"]
     
     subgraph StorageEngine ["Mini Redis 핵심 스토리지 계층"]
-        Store -->|"O(1) 키-엔트리 매핑"| HashMap["해시맵 (src/hashmap.py)"]
-        Store -->|"O(1) LRU 순서 갱신/방출"| DLL["이중 연결 리스트 (src/doubly_linked_list.py)"]
-        Store -->|"O(log N) 만료 시각(TTL) 추적"| Heap["최소 힙 (src/heap.py)"]
+        Store -->|키-엔트리 O1 매핑| HashMap["해시맵 (src/hashmap.py)"]
+        Store -->|LRU 순서 갱신 및 방출| DLL["이중 연결 리스트 (src/doubly_linked_list.py)"]
+        Store -->|만료 시각 TTL 추적| Heap["최소 힙 (src/heap.py)"]
     end
     
-    Store -->|"실행 결과 반환"| CLI
-    CLI -->|"Redis 스타일 표준 출력"| User
+    Store -->|실행 결과 반환| CLI
+    CLI -->|Redis 스타일 표준 출력| User
 ```
 
 ---
@@ -270,12 +270,12 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Start(["REPL 시작 (run_repl)"]) --> Prompt["프롬프트 출력 (mini-redis>)"]
+    Start(["REPL 시작 - run_repl"]) --> Prompt["프롬프트 출력: mini-redis>"]
     Prompt --> Read["사용자 입력 수신"]
     Read --> CheckExit{"exit 또는 quit?"}
     
-    CheckExit -->|Yes| Terminate(["REPL 종료"])
-    CheckExit -->|No| Parse["shlex.split 파싱 (따옴표/공백 처리)"]
+    CheckExit -->|Yes| Terminate(["REPL 세션 종료"])
+    CheckExit -->|No| Parse["shlex.split 파싱: 따옴표 및 공백 처리"]
     
     Parse --> EmptyCheck{"빈 입력인가?"}
     EmptyCheck -->|Yes| Prompt
@@ -283,15 +283,15 @@ flowchart TD
     
     Upper --> CmdDispatch{"명령어 라우팅"}
     
-    CmdDispatch -->|SET / GET / DEL / ...| ArgsCheck{"인자 개수/타입 검사"}
-    CmdDispatch -->|미지원 명령| UnknownErr["에러: (error) ERR unknown command"]
+    CmdDispatch -->|SET / GET / DEL 등| ArgsCheck{"인자 개수 및 타입 검사"}
+    CmdDispatch -->|미지원 명령| UnknownErr["에러: ERR unknown command"]
     
     ArgsCheck -->|인자 개수 불일치| ArgErr["에러: ERR wrong number of arguments"]
-    ArgsCheck -->|정수 파싱 실패| IntErr["에러: ERR value is not an integer"]
-    ArgsCheck -->|정상| CallStore["Store 해당 메서드 호출"]
+    ArgsCheck -->|정수 변환 실패| IntErr["에러: ERR value is not an integer"]
+    ArgsCheck -->|정상 인자| CallStore["Store 해당 메서드 호출"]
     
     CallStore --> CatchOOM{"OOM 발생 여부"}
-    CatchOOM -->|OOM 발생| OOMErr["에러: (error) OOM command not allowed..."]
+    CatchOOM -->|OOM 발생| OOMErr["에러: OOM command not allowed..."]
     CatchOOM -->|정상 실행| FormatOut["Redis 표준 출력 포맷팅"]
     
     UnknownErr --> Output["출력 표시"]
@@ -306,228 +306,247 @@ flowchart TD
 
 #### ② 체이닝 해시맵 모듈 실행도 (`src/hashmap.py`)
 
-##### [2-A] HashMap.put(key, value) 실행도
+##### [2-A] HashMap.put(key, value) 단독 실행도
 djb2 다항 해시 계산, 체이닝 버킷 순회, 키 존재 시 값 갱신, 미존재 시 `insert_back` 및 로드 팩터 0.75 초과 시 2배 리사이즈/재해싱 전체 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start(["HashMap.put(key, value) 시작"]) --> HashCalc["djb2 해시 함수 호출: _hash_key(key, capacity)"]
+    Start(["HashMap.put 시작"]) --> HashCalc["djb2 다항 해시 호출: _hash_key"]
     HashCalc --> BucketIdx["버킷 인덱스 계산: h % capacity"]
-    BucketIdx --> SelectBucket["해당 버킷의 DoublyLinkedList 선택"]
+    BucketIdx --> SelectBucket["해당 인덱스의 DoublyLinkedList 선택"]
     SelectBucket --> IterList["버킷 연결 리스트의 노드 순회 시작"]
     
-    IterList --> FoundCheck{"현재 노드의 _Pair.key == key ?"}
-    FoundCheck -->|일치하는 키 발견| UpdateVal["기존 _Pair.value 갱신"]
+    IterList --> FoundCheck{"현재 노드의 key 일치 여부"}
+    FoundCheck -->|키 일치| UpdateVal["기존 _Pair.value 갱신"]
     UpdateVal --> End(["put 완료"])
     
-    FoundCheck -->|불일치| NextNode{"다음 노드 존재?"}
-    NextNode -->|Yes| IterList
-    NextNode -->|No (리스트 끝 도달)| CreatePair["새 _Pair(key, value) 객체 생성"]
+    FoundCheck -->|불일치| NextNode{"다음 노드 존재 여부"}
+    NextNode -->|다음 노드 있음| IterList
+    NextNode -->|리스트 끝 도달| CreatePair["새 _Pair 객체 생성"]
     
-    CreatePair --> InsertBack["버킷 리스트 맨 뒤에 삽입: insert_back(pair)"]
+    CreatePair --> InsertBack["버킷 리스트 끝 삽입: insert_back"]
     InsertBack --> IncSize["_size 1 증가"]
-    IncSize --> LoadFactorCheck{"로드 팩터 검사:\n(_size / _capacity) > 0.75 ?"}
+    IncSize --> LoadFactorCheck{"로드팩터 초과 여부: size/capacity > 0.75"}
     
-    LoadFactorCheck -->|초과 (Yes)| ResizeCall["_resize(capacity * 2) 호출"]
+    LoadFactorCheck -->|초과 - Yes| ResizeCall["_resize: 용량 2배 확장"]
     ResizeCall --> NewBuckets["2배 크기의 신규 버킷 배열 생성"]
-    NewBuckets --> Rehash["기존 모든 _Pair를 새 용량 기준으로 재해싱하여 재배치"]
+    NewBuckets --> Rehash["모든 항목 새 용량 기준 재해싱 및 재배치"]
     Rehash --> End
     
-    LoadFactorCheck -->|이하 (No)| End
+    LoadFactorCheck -->|이하 - No| End
 ```
 
-##### [2-B] HashMap.get(key) 및 remove(key) 실행도
+##### [2-B] HashMap.get(key) 및 remove(key) 단독 실행도
 djb2 해시를 통해 버킷을 특정하고, 연결 리스트를 순회하여 키를 탐색하고 값을 반환하거나 노드를 분리 삭제하는 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start(["HashMap.get(key) / remove(key) 시작"]) --> HashCalc["djb2 해시 함수 호출: _hash_key(key, capacity)"]
+    Start(["HashMap.get / remove 시작"]) --> HashCalc["djb2 다항 해시 호출: _hash_key"]
     HashCalc --> BucketIdx["버킷 인덱스 결정: h % capacity"]
-    BucketIdx --> SelectBucket["해당 인덱스 버킷(DoublyLinkedList) 순회"]
+    BucketIdx --> SelectBucket["해당 인덱스 버킷 리스트 순회"]
     
-    SelectBucket --> CheckNode{"버킷 내 노드의 _Pair.key == key ?"}
-    CheckNode -->|일치하는 노드 발견| ActionCheck{"요청된 동작 구분"}
+    SelectBucket --> CheckNode{"버킷 내 노드의 key 일치 여부"}
+    CheckNode -->|일치 노드 발견| ActionCheck{"요청 동작 구분"}
     
-    ActionCheck -->|get(key) 호출인 경우| ReturnVal["해당 _Pair.value 반환"]
-    ActionCheck -->|remove(key) 호출인 경우| DeleteNode["버킷 리스트에서 노드 분리: remove_node(curr)"]
+    ActionCheck -->|get 호출| ReturnVal["해당 _Pair.value 반환"]
+    ActionCheck -->|remove 호출| DeleteNode["버킷 리스트에서 노드 분리: remove_node"]
     DeleteNode --> DecSize["_size 1 감소 및 True 반환"]
     
-    CheckNode -->|불일치 & 다음 노드 존재| CheckNode
+    CheckNode -->|불일치 및 다음 존재| CheckNode
     CheckNode -->|리스트 끝까지 미발견| NotFound["키 미존재 처리"]
     
-    NotFound --> RetDefault["get: default(None) 반환\nremove: False 반환"]
+    NotFound --> RetDefault["get: None 반환 / remove: False 반환"]
 ```
 
 ---
 
 #### ③ Sentinel 이중 연결 리스트 모듈 실행도 (`src/doubly_linked_list.py`)
-더미 head/tail 기반으로 None 분기 없는 $O(1)$ 삽입, 삭제, 앞으로 이동(`move_to_front`) 메커니즘입니다.
+
+##### [3-A] DoublyLinkedList.move_to_front(node) 단독 실행도
+노드 양방향 포인터를 $O(1)$로 분리하여 head 더미 노드 바로 뒤로 재배치하는 최근 사용(MRU) 갱신 흐름입니다.
 
 ```mermaid
 flowchart TD
-    subgraph DLL_Ops ["DoublyLinkedList 핵심 연산 (모두 O(1))"]
-        direction TB
-        Structure["Sentinel 구조: [head 더미] <--> [노드 1] <--> [노드 2] <--> [tail 더미]"]
-        
-        subgraph MoveFront ["move_to_front(node) 흐름"]
-            MF_1["1. 기존 위치에서 노드 분리:\nnode.prev.next = node.next\nnode.next.prev = node.prev"]
-            MF_2["2. head 더미 바로 뒤에 노드 연결:\nnode.next = head.next\nnode.prev = head\nhead.next.prev = node\nhead.next = node"]
-            MF_1 --> MF_2
-        end
-        
-        subgraph RemoveBack ["remove_back() 흐름 (LRU 제거용)"]
-            RB_1["tail.prev 노드 선택 (가장 오래된 노드)"]
-            RB_2["선택된 노드를 링크에서 분리"]
-            RB_3["데이터 반환 및 size 1 감소"]
-            RB_1 --> RB_2 --> RB_3
-        end
-        
-        subgraph InsertFront ["insert_front(data) 흐름 (MRU 삽입용)"]
-            IF_1["새 Node(data) 생성"]
-            IF_2["head 더미와 head.next 사이에 노드 연결"]
-            IF_3["size 1 증가 및 새 Node 반환"]
-            IF_1 --> IF_2 --> IF_3
-        end
-    end
+    Start(["move_to_front 호출"]) --> Detach1["노드 이전 포인터 연결: node.prev.next = node.next"]
+    Detach1 --> Detach2["노드 다음 포인터 연결: node.next.prev = node.prev"]
+    Detach2 --> Insert1["노드 다음을 기존 첫 노드로: node.next = head.next"]
+    Insert1 --> Insert2["노드 이전을 head 더미로: node.prev = head"]
+    Insert2 --> Link1["기존 첫 노드의 이전을 현재 노드로: head.next.prev = node"]
+    Link1 --> Link2["head 더미의 다음을 현재 노드로: head.next = node"]
+    Link2 --> End(["O1 최신 순서 갱신 완료"])
+```
+
+##### [3-B] DoublyLinkedList.remove_back() 단독 실행도 (LRU 방출용)
+tail 더미 노드 바로 앞의 가장 오래된 노드를 $O(1)$로 분리 추출하는 LRU Eviction 메커니즘입니다.
+
+```mermaid
+flowchart TD
+    Start(["remove_back 호출 - LRU 방출용"]) --> EmptyCheck{"리스트가 비어있는가?"}
+    EmptyCheck -->|비어있음| RetNone(["None 반환"])
+    
+    EmptyCheck -->|노드 존재| PickNode["가장 오래된 노드 선택: node = tail.prev"]
+    PickNode --> Unlink["노드 분리: tail.prev = node.prev, node.prev.next = tail"]
+    Unlink --> DecSize["_size 1 감소"]
+    DecSize --> RetData(["node.data 반환 - O1 제거 완료"])
+```
+
+##### [3-C] DoublyLinkedList.insert_front(data) 단독 실행도 (MRU 삽입용)
+head 더미 노드 바로 뒤에 새 노드를 생성하여 $O(1)$로 연결하는 흐름입니다.
+
+```mermaid
+flowchart TD
+    Start(["insert_front 호출 - MRU 삽입용"]) --> NewNode["새 Node 객체 생성: new_node = Node(data)"]
+    NewNode --> SetNext["새 노드의 다음을 기존 첫 노드로: new_node.next = head.next"]
+    SetNext --> SetPrev["새 노드의 이전을 head 더미로: new_node.prev = head"]
+    SetPrev --> LinkHeadNext["기존 첫 노드의 이전을 새 노드로: head.next.prev = new_node"]
+    LinkHeadNext --> LinkHead["head 더미의 다음을 새 노드로: head.next = new_node"]
+    LinkHead --> IncSize["_size 1 증가"]
+    IncSize --> RetNode(["new_node 포인터 반환 - O1 삽입 완료"])
 ```
 
 ---
 
 #### ④ TTL 최소 힙 모듈 실행도 (`src/heap.py`)
 
-##### [4-A] MinHeap.push(item) 실행도
+##### [4-A] MinHeap.push(item) 단독 실행도
 배열 끝에 원소를 추가하고 부모 노드와 만료 시각을 비교하며 루트 방향으로 거슬러 올라가는 상향 힙화(`_heapify_up`) 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start(["MinHeap.push(item) 호출\nitem = (expire_at, key, version)"]) --> Append["배열 맨 끝에 원소 추가: self._data.append(item)"]
-    Append --> InitIdx["현재 인덱스 설정: idx = len(_data) - 1"]
-    InitIdx --> HeapifyUp["_heapify_up(idx) 루프 시작"]
+    Start(["MinHeap.push 호출: item = expire_at, key, version"]) --> Append["배열 끝에 원소 추가: _data.append"]
+    Append --> InitIdx["현재 인덱스 설정: idx = len - 1"]
+    InitIdx --> HeapifyUp["_heapify_up 루프 시작"]
     
-    HeapifyUp --> RootCheck{"idx > 0 인가? (루트 여부)"}
-    RootCheck -->|루트 도달 (No)| Done(["push 완료 (힙 속성 만족)"])
+    HeapifyUp --> RootCheck{"idx > 0 여부 - 루트 검사"}
+    RootCheck -->|루트 도달 - No| Done(["push 완료 - 힙 속성 만족"])
     
-    RootCheck -->|루트 아님 (Yes)| ParentIdx["부모 인덱스 계산: parent = (idx - 1) // 2"]
-    ParentIdx --> Compare{"_data[idx].expire_at <\n_data[parent].expire_at ?"}
+    RootCheck -->|루트 아님 - Yes| ParentIdx["부모 인덱스 계산: parent = idx-1 // 2"]
+    ParentIdx --> Compare{"자식 만료시각 < 부모 만료시각 ?"}
     
-    Compare -->|자식이 더 작음 (위반)| Swap["부모와 현재 노드 swap:\n_data[idx], _data[parent] 교환"]
+    Compare -->|자식이 더 작음 - 위반| Swap["부모와 현재 노드 swap: _data idx, parent 교환"]
     Swap --> MoveUp["현재 인덱스 상향 이동: idx = parent"]
     MoveUp --> HeapifyUp
     
-    Compare -->|부모가 더 작거나 같음 (정상)| Done
+    Compare -->|부모가 더 작거나 같음 - 정상| Done
 ```
 
-##### [4-B] MinHeap.pop() 실행도
+##### [4-B] MinHeap.pop() 단독 실행도
 루트(최솟값)를 꺼내고 마지막 노드를 루트로 옮긴 뒤, 더 작은 자식과 비교/교환하며 내려가는 하향 힙화(`_heapify_down`) 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start(["MinHeap.pop() 호출"]) --> EmptyCheck{"self._data가 비어있는가?"}
+    Start(["MinHeap.pop 호출"]) --> EmptyCheck{"_data가 비어있는가?"}
     EmptyCheck -->|Yes| IndexError["IndexError 예외 발생"]
     
     EmptyCheck -->|No| OneItemCheck{"원소가 1개뿐인가?"}
-    OneItemCheck -->|Yes| PopOnly["단일 원소 pop() 반환"]
+    OneItemCheck -->|Yes| PopOnly["단일 원소 pop 반환"]
     
-    OneItemCheck -->|2개 이상| SaveRoot["루트(인덱스 0) 최솟값 보관: root = _data[0]"]
-    SaveRoot --> MoveLastToRoot["배열 맨 끝 원소를 루트 위치에 대입:\n_data[0] = _data.pop()"]
-    MoveLastToRoot --> InitDown["idx = 0 설정 후 _heapify_down(0) 시작"]
+    OneItemCheck -->|2개 이상| SaveRoot["루트 최솟값 보관: root = _data 0"]
+    SaveRoot --> MoveLastToRoot["마지막 원소를 루트 위치로: _data 0 = _data.pop"]
+    MoveLastToRoot --> InitDown["idx = 0 설정 후 _heapify_down 시작"]
     
-    InitDown --> CalcChild["자식 인덱스 계산:\nleft = 2 * idx + 1\nright = 2 * idx + 2"]
-    CalcChild --> LeftExist{"left < len(_data) ? (자식 존재 여부)"}
+    InitDown --> CalcChild["자식 인덱스 계산: left = 2*idx+1, right = 2*idx+2"]
+    CalcChild --> LeftExist{"left < len ? - 자식 존재 여부"}
     
-    LeftExist -->|자식 없음 (리프)| ReturnRoot(["보관해둔 root 반환 (pop 완료)"])
+    LeftExist -->|자식 없음 - 리프| ReturnRoot(["보관된 root 반환 - pop 완료"])
     
-    LeftExist -->|자식 존재| FindSmallest["left와 right 중 expire_at이 더 작은 자식을 smallest로 선택"]
-    FindSmallest --> CompareDown{"_data[smallest].expire_at <\n_data[idx].expire_at ?"}
+    LeftExist -->|자식 존재| FindSmallest["left와 right 중 더 작은 자식을 smallest로 선택"]
+    FindSmallest --> CompareDown{"smallest 자식 < 현재 노드 ?"}
     
-    CompareDown -->|자식이 더 작음 (위반)| SwapDown["_data[idx]와 _data[smallest] 교환"]
+    CompareDown -->|자식이 더 작음 - 위반| SwapDown["현재 노드와 smallest 자식 swap"]
     SwapDown --> MoveDown["idx = smallest로 하향 이동"]
     MoveDown --> InitDown
     
-    CompareDown -->|현재 노드가 더 작거나 같음 (정상)| ReturnRoot
+    CompareDown -->|현재 노드가 작거나 같음 - 정상| ReturnRoot
 ```
 
 ---
 
 #### ⑤ 통합 스토리지 엔진 모듈 실행도 (`src/store.py`)
 
-##### [5-A] SET key value 실행도 (OOM, 메모리 산정, LRU 방출 루프)
+##### [5-A] SET key value 단독 실행도
 만료 키 청소, 단일 항목 OOM 방어, 기존 키 Overwrite 시 TTL 무효화 및 메모리 계산, LRU tail 방출 루프 전체 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start(["SET key value 호출"]) --> Clean["만료된 키 힙 정리: _cleanup_expired()"]
-    Clean --> CalcEntryMem["신규 엔트리 크기 계산:\nnew_mem = len(utf8(key)) + len(utf8(value))"]
+    Start(["SET key value 호출"]) --> Clean["만료 키 정리: _cleanup_expired"]
+    Clean --> CalcEntryMem["신규 크기 계산: key바이트 + value바이트"]
     
-    CalcEntryMem --> OOMCheck{"maxmemory > 0 이고\nnew_mem > maxmemory ?"}
-    OOMCheck -->|단일 항목 메모리 초과| OOMErr["OOMError 발생 (데이터 저장 거부)"]
+    CalcEntryMem --> OOMCheck{"maxmemory 초과 여부: new_mem > maxmemory"}
+    OOMCheck -->|단일 항목 초과| OOMErr["OOMError 발생: 데이터 저장 거부"]
     
-    OOMCheck -->|저장 가능 (정상)| Lookup["HashMap.get(key) 기존 엔트리 조회"]
-    Lookup --> ExistsCheck{"기존 키가 이미 존재하는가?"}
+    OOMCheck -->|저장 가능 - 정상| Lookup["HashMap.get으로 기존 엔트리 조회"]
+    Lookup --> ExistsCheck{"기존 키 존재 여부"}
     
-    ExistsCheck -->|기존 키 존재 (Overwrite)| UpdateBranch["1. 기존 메모리 차감: used_memory -= old_mem\n2. TTL 초기화: entry.expire_at = None\n3. 힙 원소 무효화: entry.ttl_version += 1\n4. 값 갱신: entry.value = value\n5. LRU 갱신: DLL.move_to_front(entry.lru_node)"]
+    ExistsCheck -->|기존 키 존재 - Overwrite| UpdateBranch["1. 기존 메모리 차감: used_memory -= old_mem\n2. TTL 초기화: expire_at = None\n3. 힙 원소 무효화: ttl_version += 1\n4. 값 갱신: entry.value = value\n5. LRU 갱신: DLL.move_to_front"]
     
-    ExistsCheck -->|신규 키 (New Key)| InsertBranch["1. LRU 리스트 앞단에 노드 삽입: lru_node = DLL.insert_front(key)\n2. _Entry 객체 생성 (value, lru_node 등)\n3. HashMap.put(key, entry) 등록"]
+    ExistsCheck -->|신규 키 - New Key| InsertBranch["1. LRU 리스트 앞단 삽입: DLL.insert_front\n2. _Entry 객체 생성\n3. HashMap.put 등록"]
     
-    UpdateBranch --> AddMem["메모리 사용량 증가:\nused_memory += new_mem"]
+    UpdateBranch --> AddMem["메모리 추가: used_memory += new_mem"]
     InsertBranch --> AddMem
     
-    AddMem --> EvictLoopCheck{"maxmemory > 0 이고\nused_memory > maxmemory ?"}
+    AddMem --> EvictLoopCheck{"maxmemory 초과 상태 여부: used > max"}
     
-    EvictLoopCheck -->|용량 초과 상태 (Yes)| EvictAction["1. LRU 리스트 꼬리에서 제거: victim = DLL.remove_back()\n2. 해당 victim 키에 대해 self.delete(victim) 수행\n3. evicted_keys 누적 카운트 1 증가"]
+    EvictLoopCheck -->|용량 초과 - Yes| EvictAction["1. LRU 리스트 꼬리 노드 추출: DLL.remove_back\n2. 해당 키 delete 수행 및 메모리 차감\n3. evicted_keys 카운트 1 증가"]
     EvictAction --> EvictLoopCheck
     
-    EvictLoopCheck -->|용량 정상 (No)| RetOK(["OK 결과 반환"])
+    EvictLoopCheck -->|용량 정상 - No| RetOK(["OK 반환"])
 ```
 
-##### [5-B] GET key 실행도 (Lazy TTL 검증, O(1) LRU 갱신)
+##### [5-B] GET key 단독 실행도
 해시맵 조회 후 만료 시 삭제 및 (nil) 반환(LRU 미갱신), 유효 시 $O(1)$ LRU front 이동 및 값 반환 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start(["GET key 호출"]) --> Lookup["HashMap.get(key)로 _Entry 조회"]
-    Lookup --> ExistCheck{"엔트리가 존재하는가?"}
+    Start(["GET key 호출"]) --> Lookup["HashMap.get으로 _Entry 조회"]
+    Lookup --> ExistCheck{"엔트리 존재 여부"}
     
-    ExistCheck -->|미존재 (None)| RetNil(["(nil) 반환"])
+    ExistCheck -->|미존재 - None| RetNil(["nil 반환"])
     
-    ExistCheck -->|존재| TTLCheck{"entry.expire_at이 설정되어 있고\n현재 시각 >= entry.expire_at ?"}
+    ExistCheck -->|존재| TTLCheck{"만료 시간 경과 여부: 현재시각 >= expire_at"}
     
-    TTLCheck -->|만료됨 (Expired)| LazyDelete["1. delete(key) 호출하여 모든 구조에서 제거\n2. (중요: LRU 갱신은 수행하지 않음)"]
+    TTLCheck -->|만료됨 - Expired| LazyDelete["delete 수행하여 모든 구조에서 제거\n주의: LRU 갱신은 수행하지 않음"]
     LazyDelete --> RetNil
     
-    TTLCheck -->|유효함 (Valid)| UpdateLRU["LRU 순서 최신화:\nDLL.move_to_front(entry.lru_node)"]
+    TTLCheck -->|유효함 - Valid| UpdateLRU["LRU 순서 최신화: DLL.move_to_front"]
     UpdateLRU --> RetVal(["entry.value 값 반환"])
 ```
 
-##### [5-C] EXPIRE key seconds 및 TTL key 실행도 (Lazy Deletion 메커니즘)
-`ttl_version` 증가를 통한 힙 원소의 논리적 무효화와 남은 만료 시간 계산 흐름입니다.
+##### [5-C] EXPIRE key seconds 단독 실행도
+키 존재 여부 확인 및 `ttl_version` 1 증가를 통한 기존 힙 항목의 논리적 무효화(Lazy Deletion)와 최소 힙 신규 등록 흐름입니다.
 
 ```mermaid
 flowchart TD
-    subgraph EXPIRE_EXEC ["EXPIRE key seconds 실행 흐름"]
-        E_Start(["EXPIRE 호출"]) --> E_Lookup["HashMap.get(key) 조회"]
-        E_Lookup --> E_Exist{"키 존재 여부"}
-        E_Exist -->|미존재| E_RetZero(["(integer) 0 반환"])
-        
-        E_Exist -->|존재| E_SecCheck{"seconds <= 0 ?"}
-        E_SecCheck -->|즉시 만료| E_Del["delete(key) 수행 후 (integer) 1 반환"]
-        
-        E_SecCheck -->|정상 시간 설정| E_SetTTL["1. expire_at = 현재시각 + seconds\n2. entry.ttl_version 1 증가 (기존 힙 항목 무효화)\n3. entry.expire_at = expire_at\n4. MinHeap.push((expire_at, key, version))\n5. (integer) 1 반환"]
-    end
+    Start(["EXPIRE key seconds 호출"]) --> Lookup["HashMap.get으로 엔트리 조회"]
+    Lookup --> ExistCheck{"키 존재 여부"}
+    
+    ExistCheck -->|미존재| RetZero(["integer 0 반환"])
+    
+    ExistCheck -->|존재| SecCheck{"seconds <= 0 여부"}
+    SecCheck -->|즉시 만료| InstantExpire["delete 수행 후 integer 1 반환"]
+    
+    SecCheck -->|정상 만료 설정| SetTTL["1. expire_at = 현재시각 + seconds\n2. entry.ttl_version 1 증가: 기존 힙 항목 무효화\n3. entry.expire_at = expire_at\n4. MinHeap.push: expire_at, key, version 등록"]
+    SetTTL --> RetOne(["integer 1 반환"])
+```
 
-    subgraph TTL_EXEC ["TTL key 실행 흐름"]
-        T_Start(["TTL 호출"]) --> T_Lookup["HashMap.get(key) 조회"]
-        T_Lookup --> T_Exist{"키 존재 여부"}
-        T_Exist -->|미존재| T_RetNeg2(["(integer) -2 반환 (키 없음)"])
-        
-        T_Exist -->|존재| T_HasTTL{"entry.expire_at 설정 여부"}
-        T_HasTTL -->|만료 시간 없음| T_RetNeg1(["(integer) -1 반환 (만료 없음)"])
-        
-        T_HasTTL -->|만료 시간 있음| T_CalcRemaining["남은 시간 계산:\nremaining = int(entry.expire_at - 현재시각)"]
-        T_CalcRemaining --> T_RemainCheck{"remaining <= 0 ?"}
-        T_RemainCheck -->|이미 만료됨| T_ExpireNow["delete(key) 수행 후 (integer) -2 반환"]
-        T_RemainCheck -->|남은 시간 유효| T_RetRem(["(integer) remaining 초 반환"])
-    end
+##### [5-D] TTL key 단독 실행도
+키 존재 여부 및 만료 시간 확인, 잔여 초 계산, 경과 시 지연 삭제 흐름입니다.
+
+```mermaid
+flowchart TD
+    Start(["TTL key 호출"]) --> Lookup["HashMap.get으로 엔트리 조회"]
+    Lookup --> ExistCheck{"키 존재 여부"}
+    
+    ExistCheck -->|미존재| RetNeg2(["integer -2 반환: 키 없음"])
+    
+    ExistCheck -->|존재| HasTTL{"entry.expire_at 설정 여부"}
+    HasTTL -->|만료 미설정| RetNeg1(["integer -1 반환: 만료 없음"])
+    
+    HasTTL -->|만료 설정됨| CalcRem["남은 시간 계산: int expire_at - 현재시각"]
+    CalcRem --> RemCheck{"남은 시간 <= 0 여부"}
+    
+    RemCheck -->|이미 만료됨| ExpireNow["delete 수행 후 integer -2 반환"]
+    RemCheck -->|남은 시간 유효| RetRem(["integer 남은 초 N 반환"])
 ```
 
 ---
