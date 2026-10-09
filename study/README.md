@@ -241,22 +241,181 @@ b5_1/
 
 ---
 
-## 6. 핵심 자료구조 및 데이터 흐름 다이어그램
+## 6. 전체 및 모듈별 상세 실행도 (Execution Flowcharts)
+
+### 6.1 심플 전체 실행도 (Overall Simple Flow)
+Mini Redis의 전반적인 처리 흐름은 CLI 파싱 ➔ 스토어 엔진 ➔ 3대 자료구조(해시맵, 연결 리스트, 힙)의 유기적 상호작용 ➔ 결과 포맷팅으로 이어집니다.
 
 ```mermaid
 flowchart TD
-    CLI["CLI REPL (src/cli.py)"]
-    Store["MiniRedisStore (src/store.py)"]
-    HashMap["HashMap (src/hashmap.py)\n- djb2 해시\n- 체이닝 충돌 해결\n- 로드팩터 0.75 확장"]
-    DLL["DoublyLinkedList (src/doubly_linked_list.py)\n- Sentinel 더미 노드\n- LRU 순서 유지 (front: MRU / back: LRU)"]
-    Heap["MinHeap (src/heap.py)\n- 배열 기반 완전 이진 트리\n- (expire_at, key, version)\n- Lazy Deletion"]
+    User(["사용자 (User)"]) -->|"입력 (CLI 명령어)"| CLI["CLI 모듈 (src/cli.py)"]
+    CLI -->|"파싱 및 인자 검증"| Store["스토리지 엔진 (src/store.py)"]
+    
+    subgraph StorageEngine ["Mini Redis 핵심 스토리지 계층"]
+        Store -->|"O(1) 키-엔트리 매핑"| HashMap["해시맵 (src/hashmap.py)"]
+        Store -->|"O(1) LRU 순서 갱신/방출"| DLL["이중 연결 리스트 (src/doubly_linked_list.py)"]
+        Store -->|"O(log N) 만료 시각(TTL) 추적"| Heap["최소 힙 (src/heap.py)"]
+    end
+    
+    Store -->|"실행 결과 반환"| CLI
+    CLI -->|"Redis 스타일 표준 출력"| User
+```
 
-    CLI -->|SET / GET / DEL / EXPIRE| Store
-    Store -->|"O(1) 키 탐색 & Entry 획득"| HashMap
-    Store -->|"O(1) 최근 접근 갱신 (move_to_front)"| DLL
-    Store -->|"O(log N) 만료 시각 등록 (push)"| Heap
-    Store -->|"메모리 초과 시 LRU 노드 제거 (remove_back)"| DLL
-    Store -->|"만료 검증 후 유효 시 제거"| Heap
+---
+
+### 6.2 모듈별 상세 실행도 (Module Execution Flows)
+
+#### ① CLI & REPL 모듈 실행도 (`src/cli.py` & `main.py`)
+명령어 수신부터 따옴표 파싱(`shlex`), 명령어 라우팅, 유효성 검사, 에러 출력 및 포맷팅 흐름입니다.
+
+```mermaid
+flowchart TD
+    Start(["REPL 시작 (run_repl)"]) --> Prompt["프롬프트 출력 (mini-redis>)"]
+    Prompt --> Read["사용자 입력 수신"]
+    Read --> CheckExit{"exit 또는 quit?"}
+    
+    CheckExit -->|Yes| Terminate(["REPL 종료"])
+    CheckExit -->|No| Parse["shlex.split 파싱 (따옴표/공백 처리)"]
+    
+    Parse --> EmptyCheck{"빈 입력인가?"}
+    EmptyCheck -->|Yes| Prompt
+    EmptyCheck -->|No| Upper["명령어 대문자 변환"]
+    
+    Upper --> CmdDispatch{"명령어 라우팅"}
+    
+    CmdDispatch -->|SET / GET / DEL / ...| ArgsCheck{"인자 개수/타입 검사"}
+    CmdDispatch -->|미지원 명령| UnknownErr["에러: (error) ERR unknown command"]
+    
+    ArgsCheck -->|인자 개수 불일치| ArgErr["에러: ERR wrong number of arguments"]
+    ArgsCheck -->|정수 파싱 실패| IntErr["에러: ERR value is not an integer"]
+    ArgsCheck -->|정상| CallStore["Store 해당 메서드 호출"]
+    
+    CallStore --> CatchOOM{"OOM 발생 여부"}
+    CatchOOM -->|OOM 발생| OOMErr["에러: (error) OOM command not allowed..."]
+    CatchOOM -->|정상 실행| FormatOut["Redis 표준 출력 포맷팅"]
+    
+    UnknownErr --> Output["출력 표시"]
+    ArgErr --> Output
+    IntErr --> Output
+    OOMErr --> Output
+    FormatOut --> Output
+    Output --> Prompt
+```
+
+#### ② 체이닝 해시맵 모듈 실행도 (`src/hashmap.py`)
+`put(key, value)`의 djb2 해시 계산, 체이닝 리스트 탐색, 로드팩터 0.75 확장 리사이즈 및 `get(key)` 탐색 흐름입니다.
+
+```mermaid
+flowchart TD
+    subgraph PUT ["HashMap.put(key, value) 흐름"]
+        P_Start(["put 호출"]) --> P_Hash["djb2 다항 해시 계산 및 버킷 인덱스 결정"]
+        P_Hash --> P_Bucket["해당 인덱스의 DoublyLinkedList 순회"]
+        P_Bucket --> P_Exists{"기존 Key 존재?"}
+        P_Exists -->|Yes| P_Update["기존 노드의 _Pair.value 갱신"]
+        P_Exists -->|No| P_Insert["버킷 리스트 뒤에 새 _Pair 삽입 (insert_back)"]
+        P_Insert --> P_Inc["size 1 증가"]
+        P_Inc --> P_LoadCheck{"로드팩터 > 0.75 ?"}
+        P_LoadCheck -->|Yes| P_Resize["_resize: 버킷 2배 확장 & 전체 재해싱"]
+        P_LoadCheck -->|No| P_End(["put 종료"])
+        P_Update --> P_End
+        P_Resize --> P_End
+    end
+
+    subgraph GET ["HashMap.get(key) 흐름"]
+        G_Start(["get 호출"]) --> G_Hash["djb2 다항 해시 계산 및 버킷 인덱스 결정"]
+        G_Hash --> G_Bucket["해당 버킷의 DoublyLinkedList 순회"]
+        G_Bucket --> G_Found{"일치하는 Key 발견?"}
+        G_Found -->|Yes| G_RetVal["해당 _Pair.value 반환"]
+        G_Found -->|No| G_RetDef["기본값 (None) 반환"]
+    end
+```
+
+#### ③ Sentinel 이중 연결 리스트 모듈 실행도 (`src/doubly_linked_list.py`)
+더미 head/tail 기반으로 None 분기 없는 $O(1)$ 삽입, 삭제, 앞으로 이동(`move_to_front`) 메커니즘입니다.
+
+```mermaid
+flowchart TD
+    subgraph DLL_Ops ["DoublyLinkedList 핵심 연산 (모두 O(1))"]
+        direction TB
+        Structure["Sentinel 구조: [head 더미] <--> [노드 1] <--> [노드 2] <--> [tail 더미]"]
+        
+        subgraph MoveFront ["move_to_front(node) 흐름"]
+            MF_1["1. 기존 위치에서 노드 분리:\nnode.prev.next = node.next\nnode.next.prev = node.prev"]
+            MF_2["2. head 더미 바로 뒤에 노드 연결:\nnode.next = head.next\nnode.prev = head\nhead.next.prev = node\nhead.next = node"]
+            MF_1 --> MF_2
+        end
+        
+        subgraph RemoveBack ["remove_back() 흐름 (LRU 제거용)"]
+            RB_1["tail.prev 노드 선택 (가장 오래된 노드)"]
+            RB_2["선택된 노드를 링크에서 분리"]
+            RB_3["데이터 반환 및 size 1 감소"]
+            RB_1 --> RB_2 --> RB_3
+        end
+        
+        subgraph InsertFront ["insert_front(data) 흐름 (MRU 삽입용)"]
+            IF_1["새 Node(data) 생성"]
+            IF_2["head 더미와 head.next 사이에 노드 연결"]
+            IF_3["size 1 증가 및 새 Node 반환"]
+            IF_1 --> IF_2 --> IF_3
+        end
+    end
+```
+
+#### ④ TTL 최소 힙 모듈 실행도 (`src/heap.py`)
+배열 기반 완전 이진 트리에서 `(expire_at, key, version)` 튜플을 $O(\log N)$으로 관리하는 `push` 및 `pop` 알고리즘입니다.
+
+```mermaid
+flowchart TD
+    subgraph PUSH ["MinHeap.push(item) - O(log N)"]
+        PU_1["배열 끝에 원소 추가 (data.append)"] --> PU_2["_heapify_up 시작 (현재 인덱스)"]
+        PU_2 --> PU_3{"부모 노드와 expire_at 비교"}
+        PU_3 -->|"자식이 더 작음"| PU_4["부모와 자식 위치 교환 (swap) 후 상향 이동"]
+        PU_4 --> PU_3
+        PU_3 -->|"부모가 더 작거나 루트 도달"| PU_Done(["push 완료"])
+    end
+
+    subgraph POP ["MinHeap.pop() - O(log N)"]
+        PO_1["루트(인덱스 0) 최솟값 보관"] --> PO_2["배열 맨 끝 원소를 루트(0번)로 이동"]
+        PO_2 --> PO_3["_heapify_down 시작 (루트부터 하향)"]
+        PO_3 --> PO_4{"자식 노드들과 expire_at 비교"}
+        PO_4 -->|"더 작은 자식이 존재"| PO_5["더 작은 자식과 위치 교환 (swap) 후 하향 이동"]
+        PO_5 --> PO_4
+        PO_4 -->|"자식보다 작거나 리프 도달"| PO_Done["보관된 최솟값 반환"]
+    end
+```
+
+#### ⑤ 통합 스토리지 엔진 모듈 실행도 (`src/store.py`)
+`SET` 시의 OOM 검사, 버전 태깅, 메모리 계산 및 LRU Eviction 루프와 `GET` 시의 Lazy TTL 검증 및 LRU 이동 흐름입니다.
+
+```mermaid
+flowchart TD
+    subgraph SET_FLOW ["SET key value 실행 흐름"]
+        S_Start(["SET 호출"]) --> S_Clean["_cleanup_expired: 만료 키 정리"]
+        S_Clean --> S_OOMCheck{"(단일 key+value 크기) > maxmemory ?"}
+        S_OOMCheck -->|Yes| S_OOM["OOMError 발생 (저장 거부)"]
+        S_OOMCheck -->|No| S_Lookup["HashMap에서 기존 키 조회"]
+        
+        S_Lookup --> S_Exists{"기존 키 존재?"}
+        S_Exists -->|Yes| S_Update["기존 메모리 차감\n기존 TTL 무효화 (ttl_version + 1)\nLRU 노드 값 갱신 후 move_to_front"]
+        S_Exists -->|No| S_Insert["새 _Entry 생성\nHashMap.put 등록\nDLL.insert_front로 LRU 노드 생성"]
+        
+        S_Update --> S_MemAdd["used_memory += 신규 메모리"]
+        S_Insert --> S_MemAdd
+        
+        S_MemAdd --> S_EvictLoop{"maxmemory > 0 이고\nused_memory > maxmemory ?"}
+        S_EvictLoop -->|Yes| S_Evict["DLL.remove_back()으로 LRU 키 추출\n해당 키 삭제 및 메모리 차감\nevicted_keys 1 증가"]
+        S_Evict --> S_EvictLoop
+        S_EvictLoop -->|No| S_Done(["OK 반환"])
+    end
+
+    subgraph GET_FLOW ["GET key 실행 흐름"]
+        G_Start(["GET 호출"]) --> G_GetEntry["HashMap에서 _Entry 조회"]
+        G_GetEntry --> G_Check{"엔트리 존재 여부"}
+        G_Check -->|미존재| G_Nil(["(nil) 반환"])
+        G_Check -->|존재| G_TTLCheck{"만료 시간 경과 여부"}
+        G_TTLCheck -->|만료됨| G_Expired["delete(key) 수행\n(LRU 갱신 생략)"] --> G_Nil
+        G_TTLCheck -->|유효함| G_LRU["DLL.move_to_front(entry.lru_node)\n(LRU 최근 접근 갱신)"] --> G_Val(["value 반환"])
+    end
 ```
 
 ---
