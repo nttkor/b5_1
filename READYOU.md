@@ -9,7 +9,7 @@ Redis가 왜 빠른지 "in-memory라서"라고 답하면 반은 맞고 반은 �
 
 ## 1. 해시맵의 해시 함수와 충돌 해결(체이닝)
 
-`mini_redis/hashmap.py`의 `_hash_key`:
+`src/hashmap.py`의 `_hash_key`:
 
 ```python
 def _hash_key(key, capacity):

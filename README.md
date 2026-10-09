@@ -37,7 +37,7 @@ python test_mini_redis.py
 codyssey-b5-1/
 ├── main.py                     # 엔트리 포인트
 ├── test_mini_redis.py          # assert 기반 자체 테스트
-└── mini_redis/
+└── src/
     ├── doubly_linked_list.py   # 이중 연결 리스트 (sentinel 기반, O(1) 삽입/삭제/이동)
     ├── hashmap.py               # 체이닝 해시맵 (직접 설계한 해시 함수 + 로드팩터 0.75 리사이즈)
     ├── heap.py                  # 최소 힙 (배열 기반, TTL 만료 관리용)

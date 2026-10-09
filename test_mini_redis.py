@@ -2,11 +2,11 @@
 
 import time
 
-from mini_redis.doubly_linked_list import DoublyLinkedList
-from mini_redis.hashmap import HashMap
-from mini_redis.heap import MinHeap
-from mini_redis.store import MiniRedisStore, OOMError
-from mini_redis.cli import execute_command
+from src.doubly_linked_list import DoublyLinkedList
+from src.hashmap import HashMap
+from src.heap import MinHeap
+from src.store import MiniRedisStore, OOMError
+from src.cli import execute_command
 
 
 def test_doubly_linked_list():

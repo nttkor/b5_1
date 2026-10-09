@@ -1,6 +1,6 @@
-# mini_redis 모듈 전용 규칙 (Always-On Rules: GEMINI.md / AGENTS.md)
+# src 모듈 전용 규칙 (Always-On Rules: GEMINI.md / AGENTS.md)
 
-- **파일 위치**: `mini_redis/` 디렉터리 (`GEMINI.md`, `AGENTS.md`)
+- **파일 위치**: `src/` 디렉터리 (`GEMINI.md`, `AGENTS.md`)
 - **역할**: Mini Redis 핵심 자료구조 및 스토리지 엔진 구현을 위한 모듈 레벨 지침.
 
 ---
@@ -34,4 +34,4 @@
 - 모든 함수와 메서드에 `Args`, `Returns`, `Raises` 상세 docstring 유지.
 
 ### ④ 상호 동기화 관리
-- `mini_redis/GEMINI.md`와 `mini_redis/AGENTS.md`는 항상 100% 동일하게 유지합니다.
+- `src/GEMINI.md`와 `src/AGENTS.md`는 항상 100% 동일하게 유지합니다.
