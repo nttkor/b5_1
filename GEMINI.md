@@ -15,8 +15,10 @@
 - 단위 작업 완료 및 테스트 통과 후 즉시 컨벤션(`docs/CONVENTIONS.md`)에 맞춰 자동 커밋을 수행한다.
 - 커밋 메시지 형식: `<type>: <description>` (예: `feat: add LRU cache eviction`, `docs: update AGENTS.md`)
 
-### 3. 최종 보고 및 시간 기록 (Final Reporting with Timestamp)
-- 작업 완료 시 현재 로컬 시각(KST) 및 clickable한 `file://` 마크다운 링크를 포함하여 종합 보고한다.
+### 3. 프롬프트 실행 결과 및 검수/테스트 결과 보고 (Final Reporting with Timestamp & Test Verification)
+- **프롬프트 실행 완료 후 결과 보고**: 모든 프롬프트 작업 완료 시 변경된 파일, 로직, 산출물 내역을 구체적으로 보고한다.
+- **검수 및 테스트 결과 보고**: 작업 완료 후 기능 검수 내역, 테스트 스위트(`python3 test_mini_redis.py`) 실행 결과, 문법/정합성 검증 결과를 누락 없이 함께 보고한다.
+- **시간 기록 및 링크 표준**: 현재 로컬 시각(KST) 및 clickable한 `file://` 마크다운 링크를 필수로 포함하여 종합 보고한다.
 
 ### 4. 코드 및 문서 작성 기준
 - **기존 주석 및 로직 100% 보존**: 기존에 작성된 주석과 docstring, 검증된 로직을 임의로 삭제하거나 훼손하지 않는다.
