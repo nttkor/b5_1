@@ -1,6 +1,6 @@
-# Mini Redis 종합 평가문항 답변서 (b5_2_eval_QA)
+# Mini Redis 종합 평가문항 답변서 (b5_1_eval_QA)
 
-본 문서는 [`docs/b5_2_Redis_eval.md`](file:///Users/mpeg46551/b5_1/docs/b5_2_Redis_eval.md)의 평가 기준 및 "5. 평가문항" 전 항목(항목 1 ~ 항목 5)에 대한 심층 기술 답변서입니다.  
+본 문서는 [`docs/b5_1_eval.md`](file:///Users/mpeg46551/b5_1/docs/b5_1_eval.md)의 평가 기준 및 "5. 평가문항" 전 항목(항목 1 ~ 항목 5)에 대한 심층 기술 답변서입니다.  
 본 프로젝트는 Python 내장 컬렉션(`dict`, `set`, `collections`)을 일체 배제하고, 독자적으로 설계한 자료구조만을 사용하여 구현되었습니다.  
 모든 기술 설명과 답변은 실제 구현된 소스코드의 상대 경로 링크를 명시합니다.
 

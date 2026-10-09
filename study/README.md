@@ -112,9 +112,11 @@ b5_1/
 │   ├── GEMINI.md               # docs 전용 규칙 파일
 │   ├── CONVENTIONS.md          # Git 커밋 메시지 및 코드 스타일 컨벤션
 │   ├── b5_1_mission.md         # 미션 요구사항 마크다운 변환본
+│   ├── b5_1_mission_QA.md      # 미션 요구사항 심층 질의응답서
 │   ├── b5_1_mission.pdf        # 원본 미션 요구사항 PDF (보존)
-│   ├── b5_2_Redis_eval.md      # 구술/실기 평가표 마크다운 변환본
-│   └── b5_2_Redis_eval.pdf     # 원본 구술/실기 평가표 PDF (보존)
+│   ├── b5_1_eval.md            # 구술/실기 평가표 마크다운 변환본
+│   ├── b5_1_eval_QA.md         # 구술/실기 종합 평가문항 답변서
+│   └── b5_1_eval.pdf           # 원본 구술/실기 평가표 PDF (보존)
 │
 ├── utils/                      # 하네스 엔지니어링 및 재사용 공통 유틸리티 패키지
 │   ├── __init__.py             # 패키지 식별자
@@ -228,8 +230,11 @@ b5_1/
 #### [docs/b5_1_mission.md](file:///Users/mpeg46551/b5_1/docs/b5_1_mission.md) / [docs/b5_1_mission.pdf](file:///Users/mpeg46551/b5_1/docs/b5_1_mission.pdf)
 - 미션 목표, 필수 구현 명령어(String 6개, 메모리 2개, TTL 2개), 자료구조 제약, 에러 표준 명세.
 
-#### [docs/b5_2_Redis_eval.md](file:///Users/mpeg46551/b5_1/docs/b5_2_Redis_eval.md) / [docs/b5_2_Redis_eval.pdf](file:///Users/mpeg46551/b5_1/docs/b5_2_Redis_eval.pdf)
+#### [docs/b5_1_eval.md](file:///Users/mpeg46551/b5_1/docs/b5_1_eval.md) / [docs/b5_1_eval.pdf](file:///Users/mpeg46551/b5_1/docs/b5_1_eval.pdf)
 - 실기 및 구술 평가 항목 1~5 체크리스트 (명령어 정상 동작, $O(1)$ LRU 원리 설명, 최소 힙 활용 근거, 대규모 데이터 병목 개선 방안 등).
+
+#### [docs/b5_1_mission_QA.md](file:///Users/mpeg46551/b5_1/docs/b5_1_mission_QA.md) / [docs/b5_1_eval_QA.md](file:///Users/mpeg46551/b5_1/docs/b5_1_eval_QA.md)
+- 미션 요구사항 및 평가문항 전 항목(1~5)에 대한 심층 기술 답변 및 소스코드 상대 경로 링크 모음.
 
 #### [docs/CONVENTIONS.md](file:///Users/mpeg46551/b5_1/docs/CONVENTIONS.md)
 - Conventional Commits 규격 (`feat`, `fix`, `docs`, `refactor`, `test` 등) 및 코드 작성 표준.
