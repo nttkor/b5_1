@@ -286,3 +286,381 @@ SET key value 호출
 | **Sentinel Node** | 센티넬(더미) 노드 | 경계 조건(None 분기)을 없애기 위해 리스트 양 끝에 상시 배치하는 더미 노드 | [`src/doubly_linked_list.py#L53`](../src/doubly_linked_list.py#L53) |
 | **Separate Chaining** | 분리 체이닝 | 동일 해시 버킷에 매핑된 데이터들을 연결 리스트 체인으로 엮어 충돌을 해결하는 방식 | [`src/hashmap.py#L90`](../src/hashmap.py#L90) |
 | **TTL** | 만료 시간 | Time-To-Live: 키-값 데이터가 저장소 내에서 유효하게 유지되는 잔여 수명(초) | [`src/store.py#L271`](../src/store.py#L271) |
+
+---
+
+## 🎯 9. 미션 심층 스터디 및 핵심 질의응답 (Mission Deep-Dive Study & Technical Q&A)
+
+본 장은 [`docs/b5_1_mission.md`](../docs/b5_1_mission.md) 및 [`docs/b5_1_eval.md`](../docs/b5_1_eval.md)에 제시된 핵심 구현 과제, 자료구조 설계 제약, CPython 내부 동작 메커니즘, $O(1)$ LRU 및 $O(\log N)$ TTL 달성 기믹, 그리고 10만 건 이상 대규모 확장 시의 최적화 방안을 심층 질의응답(Q&A) 형식으로 체계화하여 정리한 완전 학습 해설서입니다.
+
+---
+
+### 9.1 미션 개요 및 3대 핵심 구현 과제 (Mission Overview & Core Tasks)
+
+Mini Redis 미션은 Python의 내장 해시/집합 컬렉션(`dict`, `set`, `collections`)을 일체 사용하지 않고, 오직 저수준 배열과 수작업 자료구조만을 활용하여 경량 인메모리 Key-Value 데이터 저장소를 밑바닥부터 직접 구현하는 과제입니다.
+
+#### 1. 3대 핵심 자료구조 밑바닥 구현
+- **센티넬 기반 이중 연결 리스트 ([`DoublyLinkedList`](../src/doubly_linked_list.py#L40-L189))**: 더미 센티넬 노드(`_head`, `_tail`)를 두어 경계 조건 분기를 제거하고, $O(1)$ 시간 복잡도로 노드 삽입, 삭제 및 순서 이동을 수행.
+- **체이닝 해시맵 ([`HashMap`](../src/hashmap.py#L68-L203))**: `djb2` 다항 해시 함수와 이중 연결 리스트 기반의 분리 체이닝(Separate Chaining) 충돌 해결, 로드 팩터($\alpha > 0.75$) 초과 시 2배 동적 리사이징을 적용하여 평균 $O(1)$ 탐색 보장.
+- **배열 기반 최소 힙 ([`MinHeap`](../src/heap.py#L24-L122))**: 파이썬 `list` 버퍼 위에 완전 이진 트리 인덱스 공식을 적용하여, 가장 먼저 만료되는 키를 $O(1)$에 확인(`peek`)하고 $O(\log N)$에 처리하는 TTL 우선순위 큐 구축.
+
+#### 2. 핵심 기능 및 10대 명령어 세트
+1. **String 기본 연산 (6개)**: `SET`, `GET`, `DEL`, `EXISTS`, `DBSIZE`, `KEYS`
+2. **메모리 관리 연산 (2개)**: `CONFIG SET maxmemory <bytes>`, `INFO memory`
+3. **TTL 만료 관리 연산 (2개)**: `EXPIRE <key> <seconds>`, `TTL <key>`
+
+#### 3. 고급 캐시 정책 및 파이프라인
+- **$O(1)$ LRU 자동 축출 (Eviction)**: `used_memory > maxmemory` 초과 시 가장 오래 참조되지 않은 키(LRU)부터 순차 자동 방출.
+- **버전 기반 지연 삭제 (Lazy Deletion with Versioning)**: 키 덮어쓰기 시 `ttl_version`을 증가시켜 이전 힙 예약을 무효화함으로써 $O(N)$ 힙 탐색 없이 $O(\log N)$ 만료 파이프라인 완성.
+- **대화형 CLI REPL**: `mini-redis>` 프롬프트와 `shlex` 기반 따옴표 파싱, Redis 표준 출력 규격(`OK`, `(nil)`, `(integer) N`, `(error) ...`) 완비.
+
+---
+
+### 9.2 Python List를 활용한 $O(1)$ 달성 원리와 CPython 아키텍처 심층 분석
+
+#### Q. "내장 컬렉션(`dict`, `set`)을 쓰지 않고 직접 구현해야 한다면, 파이썬 `list`로 $O(1)$ 시간 복잡도를 달성하는 것이 가능한가요?"
+
+> **결론**: 파이썬 `list`에서 전체 원소를 순회하는 검색(`x in list`, `list.index(x)`)은 $O(N)$이지만, 본 프로젝트에서는 `list`를 탐색용이 아닌 **고정 크기 1차원 버퍼(포인터 테이블)**로만 한정 사용하여 **$O(1)$ 접근**을 완벽하게 달성합니다.
+
+#### 1. 인덱스 직행 접근 ($O(1)$ Indexing)
+- C 언어의 1차원 배열과 마찬가지로, 파이썬 `list`에서 정수 인덱스로 원소에 접근하는 연산(`array[idx]`)은 메모리 주소 계산 산술 연산만 수행하므로 **순수 $O(1)$**입니다.
+- 문자열 키를 `djb2` 해시 함수를 통해 $0 \le \text{idx} < \text{capacity}$ 범위의 정수 인덱스로 변환한 뒤, `self._buckets[idx]`로 $O(1)$ 시간에 해당 버킷으로 직행합니다.
+
+#### 2. 해시 충돌과 분리 체이닝의 결합
+- 서로 다른 키가 동일한 버킷 인덱스로 충돌하면, 각 버킷 슬롯에 할당된 직접 구현 [`DoublyLinkedList`](../src/doubly_linked_list.py#L40-L189) 체인에 노드를 연결합니다.
+- 로드 팩터가 0.75를 초과하면 버킷 용량을 2배로 확장(`_resize`)하여 체인의 평균 길이를 0.75 이하로 짧게 유지하므로, 체인 순회 비용 또한 평균 $O(1)$로 수렴합니다.
+
+#### 3. LRU 순서 갱신의 비밀: 포인터 역참조 (Pointer Dereferencing)
+- 캐시 접근(`GET`/`SET`) 시 최근 참조된 키를 맨 앞으로 옮겨야 합니다.
+- 일반적인 리스트 순회($O(N)$)를 피하기 위해, 해시맵의 [`Entry`](../src/store.py#L40-L64) 객체가 자신이 속한 연결 리스트 노드의 메모리 참조(`entry.lru_node`)를 직접 소유합니다.
+- 해시맵 조회 즉시 `entry.lru_node`를 [`move_to_front()`](../src/doubly_linked_list.py#L131-L141)에 넘겨 앞뒤 포인터 4개만 재배선하므로 순수 $O(1)$에 최신화가 완료됩니다.
+
+#### 4. CPython 내부 아키텍처 관점의 한계와 극복 방안
+컴퓨터 아키텍처 및 CPython 레벨에서 C 언어 값 배열과 파이썬 `list`의 차이점 및 극복 방식은 다음과 같습니다:
+
+```text
+[ C 언어의 값 배열 (Array of Values) ]
+┌─────────────────┬─────────────────┬─────────────────┐
+│ Value 1 (정수)  │ Value 2 (정수)  │ Value 3 (정수)  │  <── 연속된 물리 메모리 (캐시 지역성 극대화)
+└─────────────────┴─────────────────┴─────────────────┘
+
+[ 파이썬 list의 포인터 배열 (Array of Pointers: PyListObject) ]
+┌─────────────────┬─────────────────┬─────────────────┐
+│ Pointer 0       │ Pointer 1       │ Pointer 2       │  <── ob_item 포인터 배열 (8바이트 주소값들)
+└────────┬────────┴────────┬────────┴────────┬────────┘
+         │                 │                 │
+         ▼                 ▼                 ▼
+     [PyObject 0]      [PyObject 1]      [PyObject 2]    <── 힙(Heap) 공간에 흩어진 객체들
+     (헤더 + 데이터)   (헤더 + 데이터)   (헤더 + 데이터)
+```
+
+1. **시간 복잡도**: CPython의 `list`는 내부적으로 C 언어 구조체 `PyListObject`로 구현되어 있으며, `PyObject** ob_item`이라는 C 포인터 배열을 유지합니다. `list[i]` 접근 시 `ob_item + (i * sizeof(PyObject*))` 연산을 통해 $O(1)$ 시간에 해당 객체의 주소를 가져오므로 시간 복잡도상 하자는 전혀 없습니다.
+2. **메모리 오버헤드와 캐시 미스 (Cache Miss)**:
+   - C 언어 배열은 데이터 값이 연속된 메모리에 밀착되어 L1/L2 CPU 캐시 적중률이 극도로 높습니다.
+   - 반면 파이썬 `list`는 힙 영역에 흩어진 객체를 포인터를 타고 역참조해야 하므로 캐시 지역성(Spatial Locality)이 떨어지고 객체 헤더(`PyObject_HEAD`: 16~24바이트) 오버헤드가 발생합니다.
+3. **Mini Redis의 설계적 극복 방안**:
+   - **`__slots__` 도입**: [`Node`](../src/doubly_linked_list.py#L27), [`_Pair`](../src/hashmap.py#L55), [`Entry`](../src/store.py#L51) 클래스에 `__slots__`를 선언하여 인스턴스별 `__dict__` 생성을 차단하고 C 언어 구조체 형태로 메모리를 약 60% 절감.
+   - **정밀한 `used_memory` 표준 공식 적용**: 환경마다 다른 객체 헤더 크기 왜곡을 제거하기 위해 `used_memory = sum(len(utf8(key)) + len(utf8(value)))` 순수 바이트 합산 기준을 엄격히 고수.
+
+---
+
+### 9.3 별도 인덱스 파일 없이 인메모리 포인터로 데이터를 직행 탐색하는 원리
+
+#### Q. "파이썬 `list`는 포인터만 가지고 있는데 어떻게 데이터를 찾아가나요? 별도의 인덱스 파일이 존재하는 건가요?"
+
+> **결론**: Mini Redis는 디스크 파일 I/O 없이 100% RAM 메인 메모리 위에서 구동되는 순수 인메모리 데이터베이스입니다. 별도의 인덱스 파일이 존재하는 것이 아니라, **파이썬 `list` 자체가 메모리 상의 '버킷 색인 테이블'**이며 포인터 주소를 타고 힙 영역의 노드 객체로 직행합니다.
+
+```text
+[ 해시맵의 self._buckets 배열 (RAM 포인터 테이블) ]
+  Slot 0: [ Pointer ] ──> DoublyLinkedList (Empty)
+  Slot 1: [ Pointer ] ──> DoublyLinkedList (Empty)
+  Slot 2: [ Pointer ] ──> DoublyLinkedList (Empty)
+  Slot 3: [ Pointer ] ──> DoublyLinkedList (버킷 체인)
+                             │
+                             ▼
+                      [ Node (MRU) ] <═══════════> [ Node (LRU) ]
+                      data: _Pair                  data: _Pair
+                      - key: "user:1"              - key: "user:2"
+                      - value: "Alice"             - value: "Bob"
+```
+
+1. **인덱스 계산**: `SET user:1 "Alice"` 명령이 유입되면, `djb2` 해시 함수가 `"user:1"` 키를 정수 인덱스(예: `idx = 3`)로 변환합니다.
+2. **포인터 직행 ($O(1)$)**: `self._buckets[3]`을 호출하면, CPython 내부에서 `ob_item + (3 * 8)` 메모리 오선(Offset)을 즉시 산출하여 3번 슬롯의 메모리 주소를 반환합니다.
+3. **실제 데이터 도달**: 3번 슬롯의 포인터를 타고 가면 해당 위치에 할당된 `DoublyLinkedList` 인스턴스가 존재하며, 연결 리스트 체인 안의 `Node` $\rightarrow$ `_Pair(key="user:1", value="Alice")`를 즉시 참조하게 됩니다.
+
+---
+
+### 9.4 문자열 키의 정수 인덱스 변환 3단계 및 djb2 알고리즘 심층 분석
+
+#### Q. "문자열 키(`'user:1'`)는 구체적으로 어떤 연산을 거쳐 버킷 배열의 정수 인덱스로 변환되나요?"
+
+```text
+[ 문자열 키: "user:1" ]
+       │
+       ▼  1단계: djb2 다항 해시 연산
+[ 32비트 고유 정수 해시 코드: 2083492811 ]
+       │
+       ▼  2단계: 모듈로 압축 (% capacity, 예: capacity = 16)
+[ 버킷 배열 정수 인덱스: 11 ] ──> buckets[11] $O(1)$ 직행
+       │
+       ▼  3단계: 분리 체이닝 노드 순회 및 키 일치 검증
+[ Node._Pair.key == "user:1" 비교 확인 ]
+```
+
+#### djb2 해시 함수의 4대 핵심 원리
+
+```python
+def _hash_key(key: str, capacity: int) -> int:
+    h = 5381  # 1. 초깃값 소수 (Magic Number)
+    for ch in key:
+        h = ((h << 5) + h) + ord(ch)  # 2. 33배 승수와 비트 시프트: (h * 33) + ord(ch)
+    h = h & 0xFFFFFFFF  # 3. 32비트 마스킹 (부호 없는 32비트 정수화)
+    return h % capacity  # 4. 버킷 용량으로 모듈로 인덱스 압축
+```
+
+1. **초깃값 소수 5381 (Magic Number)**:
+   - 해시 초기값을 0이나 1이 아닌 홀수 소수 5381로 시작하여 비트 패턴을 초기에 넓게 분산시키고 충돌을 방지합니다.
+2. **33배 승수 연산과 비트 시프트 `(h << 5) + h`**:
+   - 문자열의 각 문자를 순회하며 이전 값에 33을 곱하고 문자 코드값(`ord(ch)`)을 더합니다.
+   - CPU 차원에서 곱셈기 대신 비트 좌측 시프트(`h << 5`, 즉 $h \times 32$)와 덧셈(`+ h`)을 결합하여 극도로 빠르게 연산합니다.
+   - 단 1글자만 바뀌어도 결과 비트가 폭포수처럼 무작위로 섞이는 **눈사태 효과(Avalanche Effect)**를 발생시킵니다.
+3. **`& 0xFFFFFFFF` (32비트 마스킹)**:
+   - 파이썬의 무제한 가변 정수(`int`) 상위 비트를 절단하여 C 언어의 32비트 부호 없는 정수(`uint32_t`) 오버플로우를 동일하게 재현합니다.
+4. **`% capacity` (버킷 인덱스 압축)**:
+   - 32비트 정수를 현재 버킷 배열 크기로 나눈 나머지를 취해 $0 \le \text{idx} < \text{capacity}$ 범위의 유효 인덱스를 확정합니다.
+
+---
+
+### 9.5 Separate Chaining 충돌 해결 및 동적 리사이징 5단계 파이프라인
+
+#### Q. "해시 충돌이 발생했을 때의 CRUD 동작 과정과 로드 팩터 0.75 초과 시의 리사이징 과정을 상세히 설명해 주세요."
+
+#### 1. 충돌 상황에서의 CRUD 동작 메커니즘
+- **삽입 (`put`)**: `_hash_key`로 인덱스를 찾고 해당 버킷 리스트를 순회합니다. 기존 키가 있으면 `pair.value = value`로 값을 갱신하고, 없으면 체인 맨 뒤에 `insert_back(_Pair(key, value))`를 수행하여 $O(1)$에 노드를 추가합니다.
+- **조회 (`get`)**: 버킷 인덱스로 직행 후 체인 리스트를 순회하며 `pair.key == key`인 노드를 찾아 값을 반환합니다.
+- **삭제 (`remove`)**: [`bucket.nodes()`](../src/doubly_linked_list.py#L174-L188) 제너레이터로 순회 도중 일치하는 노드를 찾으면 [`bucket.remove_node(node)`](../src/doubly_linked_list.py#L117-L129)를 호출하여 포인터를 $O(1)$로 분리 제거합니다.
+
+#### 2. 동적 리사이징 (Dynamic Resizing & Full Rehashing) 5단계
+
+$$\text{로드 팩터 } (\alpha) = \frac{\text{저장된 엔트리 수 } (\text{size})}{\text{버킷 배열 크기 } (\text{capacity})}$$
+
+로드 팩터가 임계값 **0.75**를 초과하면 버킷 체인의 평균 길이가 길어져 탐색 속도가 저하되므로, 즉시 2배 크기로 확장하는 리사이징을 수행합니다.
+
+```text
+[ HashMap.put(key, value) ]
+           │
+           ▼
+1. 로드 팩터 검사: if size / capacity > 0.75:
+           │
+           ▼  (초과 시 _resize(capacity * 2) 구동)
+2. 기존 버킷 배열 임시 보관: old_buckets = self._buckets
+           │
+           ▼
+3. 2배 크기의 새로운 빈 DoublyLinkedList 배열 할당
+           │
+           ▼
+4. 용량 갱신: self._capacity = new_capacity
+           │
+           ▼
+5. 전수 재해싱 (Full Rehashing):
+   old_buckets의 모든 _Pair에 대해 new_idx = _hash_key(pair.key, new_capacity) 재계산 후
+   새 버킷 체인의 맨 뒤에 insert_back 재배치
+           │
+           ▼
+[ 체인 평균 길이가 0.75 이하로 단축되어 상시 평균 O(1) 복원 완료 ]
+```
+
+---
+
+### 9.6 $O(1)$ LRU 캐시 아키텍처와 포인터 역참조 (Pointer Dereference)
+
+#### Q. "LRU 캐시 구현에서 왜 해시맵과 이중 연결 리스트를 결합해야 하며, 어떻게 $O(1)$ 갱신이 가능한가요?"
+
+#### 1. 두 자료구조 결합의 필연성
+- **해시맵 단독**: 키 조회가 $O(1)$로 빠르지만, 데이터의 시간적 사용 순서(Temporal Order)를 추적하거나 정렬할 수 없습니다.
+- **연결 리스트 단독**: 맨 앞 삽입과 맨 뒤 삭제는 빠르지만, 특정 키가 어디 있는지 탐색하려면 $O(N)$ 전수 순회가 발생합니다.
+- **결합 시너지**: 해시맵의 $O(1)$ 탐색과 연결 리스트의 $O(1)$ 포인터 이동을 결합하여 두 장점을 모두 취합니다.
+
+#### 2. $O(1)$ 순서 최신화의 핵심: `Entry.lru_node` 포인터 역참조
+
+```text
+[ HashMap (키-엔트리 색인) ]
+  "user:1" ──> Entry 객체 ──(lru_node 역참조 포인터)──┐
+                                                        │ Direct Pointer O(1)
+                                                        ▼
+[ DoublyLinkedList (LRU 순서 큐) ]
+  _head (센티넬) <───> [ Node("user:1") ] <───> [ Node("user:2") ] <───> _tail (센티넬)
+  (MRU: 방금 참조됨)                                                      (LRU: 가장 오래 미사용)
+```
+
+- [`Entry`](../src/store.py#L40-L64) 객체가 `lru_node` 필드로 자신이 속한 `Node`의 주소를 직접 보유합니다.
+- `GET` 또는 `SET` 호출 시 연결 리스트를 처음부터 검색하지 않고, `entry.lru_node`로 해당 노드의 물리 주소로 직행합니다.
+- 노드의 앞뒤 포인터 4개만 재배선하는 [`move_to_front(node)`](../src/doubly_linked_list.py#L131-L141)를 호출하여 순수 $O(1)$에 `_head` 센티넬 바로 뒤(MRU)로 이동시킵니다.
+
+#### 3. 더미 센티넬 노드(`_head`, `_tail`)의 경계 조건 제거 효과
+- 리스트의 양 끝에 데이터가 없는 더미 센티넬 노드를 상시 유지하므로, 리스트가 비어 있거나 첫 번째 노드, 마지막 노드를 삭제할 때 `if node.prev is None:` 같은 예외 분기문이 일체 필요하지 않습니다.
+
+#### 4. CRUD 및 Eviction 복잡도 매트릭스
+
+| 연산 | 해시맵 역할 | 이중 연결 리스트 역할 | 최종 복잡도 |
+| :--- | :--- | :--- | :---: |
+| **`GET key`** | $O(1)$ 키 검색 및 `Entry` 반환 | `entry.lru_node`를 맨 앞(MRU)으로 이동 | **$O(1)$** |
+| **`SET key val` (신규)** | $O(1)$ 키-엔트리 매핑 등록 | 맨 앞에 노드 삽입 후 `entry.lru_node` 연결 | **$O(1)$** |
+| **`SET key val` (갱신)** | $O(1)$ 엔트리 값 덮어쓰기 | 기존 노드를 맨 앞으로 이동 | **$O(1)$** |
+| **LRU 축출 (`_evict_if_needed`)** | 적출된 키를 $O(1)$로 해시맵에서 삭제 | `_tail.prev` 노드를 $O(1)$로 추출 및 분리 | **$O(1)$** |
+
+---
+
+### 9.7 최소 힙 TTL 만료 관리와 버전 기반 지연 삭제 (Lazy Deletion)
+
+#### Q. "최소 힙을 사용할 때 특정 키의 TTL이 변경되거나 덮어써지면 $O(N)$ 힙 탐색이 발생하지 않나요? 이를 어떻게 해결했나요?"
+
+#### 1. 최소 힙(Min-Heap)을 선택한 이유
+- 매 명령어 실행마다 전체 키를 전수 순회($O(N)$)하며 만료 여부를 검사하면 극심한 병목이 발생합니다.
+- 최소 힙은 가장 작은 만료 시각을 가진 원소를 항상 루트 노드(인덱스 0)에 유지하므로, **$O(1)$에 만료 여부를 확인(`peek`)**하고 **$O(\log N)$에 항목을 추출(`pop`)**할 수 있습니다.
+
+#### 2. 버전 기반 지연 삭제 (Lazy Deletion with `ttl_version`) 메커니즘
+최소 힙은 루트가 아닌 임의 위치의 노드를 탐색하여 삭제하는 연산이 $O(N)$이라는 태생적 한계가 있습니다. Mini Redis는 **버전 태깅(Versioning)**을 통해 이를 해결했습니다.
+
+```text
+[ 1. 최초 EXPIRE 설정 시 ]
+  Entry("Alice", ttl_version=0, expire_at=100.0)
+  MinHeap.push((100.0, "user:1", version=0))
+
+[ 2. SET으로 키 덮어쓰기 또는 EXPIRE 재설정 시 ]
+  Entry("Bob", ttl_version=1, expire_at=None)  <── ttl_version 1 증가!
+  (옛 힙 노드 (100.0, "user:1", 0)은 찾아서 지우지 않고 그대로 방치)
+
+[ 3. 선행 만료 스윕 (_sweep_expired) 시점 ]
+  MinHeap.pop() ──> (100.0, "user:1", version=0) 추출
+  검증: entry.ttl_version(1) != heap_version(0) 불일치!
+  판정: 이미 무효화된 옛 예약이므로 O(1)에 무시하고 버림 (데이터 유지)
+```
+
+1. **버전 증가**: 키의 만료 시각이 변경되거나 값이 덮어써지면 `entry.ttl_version` 카운터를 1 증가시킵니다.
+2. **신규 튜플 푸시**: 새로운 `(expire_at, key, ttl_version)` 튜플만 힙에 푸시하고, 이전 힙 노드는 $O(N)$으로 찾지 않고 그대로 둡니다.
+3. **논리적 무효화 검증**: 선행 만료 스윕([`_sweep_expired`](../src/store.py#L117-L130)) 시 힙에서 꺼낸 튜플의 `version`과 실제 엔트리의 `ttl_version`이 일치할 때만 실제 물리 삭제([`_purge`](../src/store.py#L132-L141))를 수행합니다.
+
+#### 3. 선행 만료 스윕의 $O(1)$ 즉시 탈출
+- 최소 힙 불변성에 의해 "루트보다 만료 시각이 늦은 항목은 트리 내부에 존재할 수 없음"이 수학적으로 보장됩니다.
+- 따라서 `self._ttl_heap.peek()[0] > now`이면 트리 전체의 모든 키가 유효함을 단 한 번의 검사로 확인하고 **$O(1)$에 즉시 루프를 탈출**합니다.
+
+#### 4. 단조 시계 (`time.monotonic()`) 필수성
+- `time.time()`(Wall-clock)은 사용자의 시스템 시계 수동 변경이나 NTP 시간 동기화 시 시간이 거꾸로 흐를 위험이 있습니다.
+- `time.monotonic()`은 시스템 부팅 후 항상 단조 증가하는 하드웨어 타이머로, 왜곡 없이 정확한 상대 시간 경과를 측정합니다.
+
+---
+
+### 9.8 10만 건 이상 대규모 트래픽 대비 3대 성능 병목 및 실전 고도화 방안
+
+10만 건 이상의 대규모 데이터셋 환경으로 확장할 때 예상되는 3대 병목 지점과 실전 해결책입니다.
+
+#### 1. 해시맵 일괄 재해싱 레이턴시 스파이크 $\rightarrow$ 점진적 재해싱 (Incremental Rehashing)
+- **병목**: 로드 팩터(0.75) 초과 시 10만 개 항목을 단일 요청 시점에 동기식으로 일괄 재해싱하면 이벤트 루프가 수백 ms 정지하는 Stop-the-World 현상이 발생합니다.
+- **해결책**: 2개의 버킷 테이블(`ht0`, `ht1`)과 `rehashidx` 상태 변수를 유지하며, 클라이언트 요청(CRUD)이 유입될 때마다 소수의 버킷(예: 1~10개)씩 분할 이관합니다.
+
+```python
+class IncrementalHashMap:
+    def __init__(self, capacity=8):
+        self.ht0 = [DoublyLinkedList() for _ in range(capacity)]  # 기존 메인 버킷 테이블
+        self.ht1 = None                                          # 리사이징 시 할당되는 신규 2배 버킷 테이블
+        self.rehashidx = -1                                      # -1: 미진행, >=0: 현재 이관 중인 버킷 인덱스
+        self.size0 = 0
+        self.size1 = 0
+
+    def _rehash_step(self, steps=1):
+        """클라이언트 요청 시마다 1개 이상의 버킷을 분할 이관."""
+        if self.rehashidx == -1:
+            return
+
+        while steps > 0 and self.size0 > 0:
+            while len(self.ht0[self.rehashidx]) == 0:
+                self.rehashidx += 1
+                if self.rehashidx >= len(self.ht0):
+                    self.ht0, self.ht1, self.rehashidx = self.ht1, None, -1
+                    return
+
+            bucket = self.ht0[self.rehashidx]
+            while len(bucket) > 0:
+                pair = bucket.remove_front()
+                self.size0 -= 1
+                new_idx = _hash_key(pair.key, len(self.ht1))
+                self.ht1[new_idx].insert_back(pair)
+                self.size1 += 1
+
+            self.rehashidx += 1
+            steps -= 1
+
+            if self.rehashidx >= len(self.ht0):
+                self.ht0, self.ht1, self.rehashidx = self.ht1, None, -1
+```
+
+- **CRUD 라우팅 규칙**:
+  - `SET`: 무조건 `ht1`에만 신규 저장하여 `ht0`의 데이터 수를 지속 감소시킴.
+  - `GET` / `DEL`: 먼저 `ht0`을 조회하고 없으면 `ht1`을 연속 검색하여 상시 $O(1)$ 속도 유지.
+
+---
+
+#### 2. KEYS 명령어의 풀 스캔 블로킹 $\rightarrow$ 커서 기반 비블로킹 순회 (`SCAN`)
+- **병목**: 10만 건 이상의 키가 저장된 상태에서 `KEYS`를 실행하면 전체 버킷 체인을 $O(N)$ 풀 스캔하면서 CPU/네트워크 병목과 함께 서버 전체가 블로킹됩니다.
+- **해결책**: 커서(Cursor)와 목표 개수(COUNT)를 기반으로 청크(Chunk) 단위로 분할 반환하는 `SCAN` 명령어를 도입합니다.
+
+```python
+def scan(self, cursor: int, count: int = 10):
+    """커서 기반 분할 순회: (next_cursor, [keys...]) 반환."""
+    if cursor >= self._capacity or cursor < 0:
+        cursor = 0
+
+    result_keys = []
+    current_idx = cursor
+    scanned = 0
+
+    while len(result_keys) < count and scanned < self._capacity:
+        bucket = self._buckets[current_idx]
+        for pair in bucket:
+            if not self._is_expired(pair.key):
+                result_keys.append(pair.key)
+                if len(result_keys) >= count:
+                    break
+
+        current_idx = (current_idx + 1) % self._capacity
+        scanned += 1
+        if current_idx == 0:
+            break
+
+    next_cursor = 0 if current_idx == 0 or scanned >= self._capacity else current_idx
+    return next_cursor, result_keys
+```
+
+- **실제 Redis의 고급 기법: 비트 반전 커서 (Bit-Reversed Cursor)**:
+  - 순회 도중 해시맵 리사이징이 발생하면 버킷이 분할되면서 키가 중복되거나 누락될 수 있습니다.
+  - 실제 Redis는 최상위 비트(MSB)부터 증가시키는 **비트 반전 순회(Bit-Reversed Counting)**를 적용하여, 순회 도중 2배 확장이 일어나더라도 분할된 자식 버킷들이 연속으로 방문되도록 보장합니다.
+
+---
+
+#### 3. 무효 튜플 누적 및 미참조 키 메모리 누수 $\rightarrow$ 백그라운드 능동 만료 (Active Expiry Cron)
+- **병목**: 지연 만료(Lazy Expiry)는 클라이언트가 접근할 때만 만료를 검사하므로, 클라이언트가 다시는 찾지 않는 키(Cold Key)가 있으면 영원히 메모리를 점유하는 메모리 누수가 발생합니다. 빈번한 덮어쓰기 시 힙 내부에 무효화된 튜플이 누적되는 문제도 있습니다.
+- **해결책**: 백그라운드 타이머(Cron)를 통해 주기적으로 만료 키를 선제 소거하는 **확률적 능동 만료 (Probabilistic Active Expiry)**를 결합합니다.
+
+```text
+[ 백그라운드 능동 만료 주기 실행 (예: 초당 10회) ]
+                   │
+                   ▼
+1. TTL 설정 키 공간에서 무작위 20개 표본 추출 (Sampling)
+                   │
+                   ▼
+2. 표본 중 이미 만료된 키(expire_at <= now) 즉시 소거
+                   │
+                   ▼
+3. 삭제된 키 비율 검사 (25% 임계 규칙)
+         ┌─────────┴─────────┐
+         ▼                   ▼
+ [ 삭제 비율 > 25% ]   [ 삭제 비율 <= 25% ]
+ (5개 초과 만료됨)     (5개 이하 만료됨)
+         │                   │
+         ▼                   ▼
+  즉시 1단계부터        이번 주기 검사 종료
+  반복 루프 재실행       (다음 주기까지 대기)
+```
+
+- **CPU 타임아웃 보호 (CPU Protection)**: 능동 만료 루프가 메인 스레드를 블로킹하지 않도록, **단일 실행 주기당 최대 실행 시간(예: 25ms 상한, CPU 성능의 25% 상한)**을 엄격히 제한하여 메인 요청 처리를 방해하지 않습니다.
