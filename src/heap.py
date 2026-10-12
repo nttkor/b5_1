@@ -82,6 +82,31 @@ class MinHeap:	# 배열 기반 완전 이진 트리 최소 힙 클래스 정의
         """
         return len(self._data)	# 내부 배열의 길이 반환
 
+    def dump_top(self, n=5):	# 디버깅용으로 상위 n개 항목을 덤프하는 메서드 정의
+        """디버깅 및 상태 모니터링을 위해 힙의 상위 최대 n개 항목을 정렬된 사본 리스트로 반환합니다.
+
+        원본 힙 트리의 구조를 훼손하지 않도록 내부 데이터를 복사한 임시 힙에서
+        최솟값 순서대로 추출(pop)하여 반환합니다.
+
+        Args:
+            n (int): 덤프할 상위 항목 수 (기본값: 5).
+
+        Returns:
+            list: 힙 상위 최대 n개의 원소 리스트 (오름차순 정렬).
+        """
+        if not self._data:	# 힙이 비어있는 경우
+            return []	# 빈 리스트 반환
+        limit = min(n, len(self._data))	# 덤프할 최대 개수 산출
+        temp = MinHeap()	# 원본 훼손 방지용 임시 힙 인스턴스 생성
+        temp._data = list(self._data)	# 힙 배열 복사
+        result = []	# 상위 항목을 수집할 결과 리스트
+        for _ in range(limit):	# 상위 limit 개수만큼 반복
+            item = temp.pop()	# 최솟값 순차 추출
+            if item is None:	# 비어있으면 조기 종료
+                break	# 반복문 탈출
+            result.append(item)	# 결과 리스트에 추가
+        return result	# 추출된 상위 항목 리스트 반환
+
     def _heapify_up(self, idx):	# 자식에서 부모 방향으로 거슬러 올라가며 정렬하는 내부 메서드 정의
         """지정된 인덱스의 노드를 부모 노드와 비교하며 상향 이동시킵니다.
 

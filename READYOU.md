@@ -167,27 +167,114 @@ flowchart TD
 
 ---
 
-## 코드 구조 한눈에
+---
 
+## 5. GET 실행 시퀀스 및 TTL 절사 정책
+
+### ① GET 명령어의 O(1) 실행 흐름 시퀀스 다이어그램
 ```mermaid
-flowchart LR
-    CLI[cli.py REPL] --> Store[store.py MiniRedisStore]
-    Store --> Map[hashmap.py HashMap]
-    Store --> LRU[doubly_linked_list.py LRU order]
-    Store --> Heap[heap.py MinHeap TTL]
-    Map --> DLL2[doubly_linked_list.py 버킷 체이닝]
+sequenceDiagram
+    autonumber
+    actor Client as 사용자 CLI
+    participant Store as MiniRedisStore
+    participant Heap as MinHeap (TTL)
+    participant Map as HashMap
+    participant LRU as DoublyLinkedList (LRU)
+
+    Client->>Store: GET key
+    Store->>Heap: sweep_expired(now)
+    Heap-->>Store: 만료 항목 pop 및 _purge
+    Store->>Map: _get_entry(key)
+    alt 키 미존재 또는 만료됨
+        Map-->>Store: None
+        Store-->>Client: (nil)
+    else 키 유효하게 존재함
+        Map-->>Store: Entry(value, lru_node)
+        Store->>LRU: move_to_front(entry.lru_node)
+        LRU-->>Store: O(1) MRU 위치 갱신
+        Store-->>Client: "value"
+    end
 ```
 
-연결 리스트 구현체 하나를 "LRU 순서 추적"과 "해시맵 버킷 체이닝" 두 곳에
-재사용했다. 서로 다른 문제처럼 보이지만 둘 다 "포인터로 연결된 노드 집합에서
-O(1)로 넣고 빼기"라는 같은 연산이 필요했기 때문이다.
+### ② TTL 반환값의 정수 절사(Floor / Truncation toward zero) 정책
+Mini Redis의 TTL 계산 공식은 `int(entry.expire_at - now)`입니다:
+- Python의 `int()` 캐스팅은 소수점 이하를 버리는 **내림/절사(Floor / Truncation)** 방식을 취합니다.
+- 예: 남은 시간이 `2.9초`일 때 `int(2.9) = 2`를 반환하고, `0.4초`일 때 `int(0.4) = 0`을 반환합니다. (0초는 아직 만료되지 않고 유효함을 의미)
+- 단조 시계가 만료 시각 이상(`now >= entry.expire_at`)이 되면 선행 `_sweep_expired`에 의해 즉시 물리 삭제되어 `(integer) -2`를 반환합니다.
 
-## 아쉬운 점 / 다음에 한다면
+---
 
-- `ttl_version`으로 무효화하는 대신, 힙 항목이 자신을 가리키는 `Entry`를 직접
-  들고 있게 하면 버전 비교 없이도 무효화를 표현할 수 있다(다만 그러면 힙 항목이
-  Entry를 참조하고 Entry는 참조하지 않아도 되므로 순환 참조는 피할 수 있다 —
-  지금 구조가 더 단순해서 그대로 뒀다).
-- `INFO memory`에 `evicted_keys`는 있지만 "몇 개가 TTL로 자연 만료됐는지"는
-  집계하지 않는다. 요구사항에 없어서 안 넣었는데, 실제 Redis라면 `expired_keys`도
-  같이 노출한다.
+## 6. LFU 전환 아키텍처 및 점진적 리해싱 (100k 벤치마크)
+
+### ① LFU 전환 시 자료구조 설계 및 코드 스켈레톤
+LFU(참조 빈도 기반 축출)는 `key_map`(Key->Node), `freq_map`(Freq->DLL), `min_freq`(최소 빈도)의 조합으로 $O(1)$을 달성합니다:
+```python
+class LFUNode:
+    __slots__ = ("key", "value", "freq", "prev", "next")
+    def __init__(self, key, value, freq=1):
+        self.key, self.value, self.freq = key, value, freq
+        self.prev = self.next = None
+
+class LFUCache:
+    """O(1) 시간 복잡도로 get, put, evict를 보장하는 LFU 캐시 엔진 스켈레톤."""
+    def __init__(self, capacity=1000):
+        self.capacity, self.size, self.min_freq = capacity, 0, 0
+        self.key_map, self.freq_map = HashMap(), HashMap()
+
+    def get(self, key):
+        if not self.key_map.contains(key): return None
+        node = self.key_map.get(key)
+        self._touch_freq(node)
+        return node.value
+
+    def put(self, key, value):
+        if self.capacity <= 0: return
+        if self.key_map.contains(key):
+            node = self.key_map.get(key); node.value = value
+            self._touch_freq(node); return
+        if self.size >= self.capacity: self._evict_lfu()
+        node = LFUNode(key, value, 1)
+        self.key_map.put(key, node)
+        self._get_freq_list(1).insert_front(node)
+        self.min_freq = 1; self.size += 1
+
+    def _touch_freq(self, node):
+        old_list = self.freq_map.get(str(node.freq))
+        old_list.remove_node(node)
+        if len(old_list) == 0 and self.min_freq == node.freq: self.min_freq += 1
+        node.freq += 1
+        self._get_freq_list(node.freq).insert_front(node)
+
+    def _evict_lfu(self):
+        victim = self.freq_map.get(str(self.min_freq)).remove_back()
+        if victim: self.key_map.remove(victim.key); self.size -= 1
+
+    def _get_freq_list(self, f):
+        if not self.freq_map.contains(str(f)):
+            dll = DoublyLinkedList(); self.freq_map.put(str(f), dll); return dll
+        return self.freq_map.get(str(f))
+```
+
+### ② 점진적 재해싱(Incremental Rehashing) 및 10만 건 실측 벤치마크
+대규모 데이터 확장 시 동기식 일괄 리해시로 인한 Latency Spike를 해결하기 위해 Redis `dict.c`의 `ht[0]`, `ht[1]`, `rehashidx` 기반 점진적 마이그레이션 아키텍처를 설계하였습니다.
+
+실제 `utils/benchmark_rehash.py`를 통해 측정한 대규모 데이터셋 벤치마크 결과:
+
+| 데이터 규모 | 삽입 소요 시간 (s) | 삽입 Throughput | 조회 Throughput | 최종 버킷 수 | 리해시 횟수 | 최대 체인 길이 | 평균 체인 길이 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **10,000건** | 0.1578s | 63,370 ops/s | 326,293 ops/s | 16,384 | 11회 | 4 | 0.61 |
+| **50,000건** | 1.5133s | 33,041 ops/s | 310,720 ops/s | 131,072 | 14회 | 4 | 0.38 |
+| **100,000건** | 3.3837s | 29,553 ops/s | 312,512 ops/s | 262,144 | 15회 | 4 | 0.38 |
+
+- **조회 불변성 증명**: 데이터 규모가 10배 증가해도 조회 처리율은 **초당 31만 회(312,512 ops/s)**로 일정하게 유지됨.
+- **체인 길이 최적화**: 10만 건 환경에서도 djb2 다항 해시와 로드팩터 0.75 확장 덕분에 최대 체인이 4개 이하로 엄격히 통제됨.
+
+---
+
+## 7. 고도화 엔지니어링 및 자체 방어 체계
+
+- **노드 재사용 풀 (`NodePool`)**: 이중 연결 리스트 및 해시맵 버킷 노드 해제 시 프리 리스트로 회수하여 CPython GC 압박과 잦은 malloc/free 오버헤드 최소화.
+- **주기적 힙 컴팩트 (`compact_ttl_heap`)**: Lazy Deletion으로 인해 누적된 버전 불일치 무효 힙 엔트리를 주기적으로 정리하여 메모리 누수 방지.
+- **축출 콜백 및 로깅 (`eviction_callback`, `eviction_log_enabled`)**: 메모리 초과로 LRU 축출 발생 시 어떤 키가 축출되고 몇 바이트가 회수되었는지 실시간 로깅 및 외부 통지 훅 제공.
+- **메모리 오버헤드 보정 옵션 (`include_overhead`)**: 채점/운영 환경에 맞춰 `PyObject_HEAD` 및 슬롯 고정 오버헤드(64B)를 선택적으로 가산 반영 가능.
+

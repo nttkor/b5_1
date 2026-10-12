@@ -18,10 +18,15 @@ Redis의 핵심 기능인 인메모리 Key-Value 캐시 저장소를 구현합�
        - 키의 TTL이 변경되거나 덮어쓰여질 때 `entry.ttl_version`을 1씩 증가시켜 이전 힙 예약을 무효화하고,
          `_sweep_expired` 호출 시 만료 타임스탬프와 버전이 일치하는 항목만 실제로 제거합니다.
     4. 메모리 관리 및 LRU 축출 (Eviction):
-       - `used_memory = sum( len(utf8(key)) + len(utf8(value)) )` 공식을 엄격히 준수합니다.
+       - `used_memory = sum( len(utf8(key)) + len(utf8(value)) )` 공식을 기본 준수하며,
+         `include_overhead` 옵션 활성화 시 객체 헤더(PyObject_HEAD 등) 고정 오버헤드를 보정 합산합니다.
        - `maxmemory > 0` 설정 시, 단일 항목의 크기가 `maxmemory`를 초과하면 즉시 OOMError를 발생시킵니다.
        - 신규 저장 후 `used_memory > maxmemory`인 경우 `used_memory <= maxmemory`가 될 때까지
          LRU 꼬리(tail.prev)의 키를 순차적으로 추출하여 메모리를 확보하고 `evicted_keys`를 카운트합니다.
+    5. 동시성 확장(Concurrency Scaling) 아키텍처 설계 포인트:
+       - 글로벌 단일 락(Global Mutex)의 경합 병목을 방지하기 위해 스트라이프 락(Striped Lock) 및 세분화된 RWLock(Reader-Writer Lock) 도입.
+       - 키의 해시값 기반 파티셔닝(Consistent Hashing Key Sharding)을 통해 N개의 독립된 MiniRedisStore 인스턴스로 부하 분산.
+       - 조회(GET, EXISTS) 시 공유 읽기 락(Shared Read Lock), 쓰기 및 Eviction(SET, DEL) 시 배타적 쓰기 락(Exclusive Write Lock)으로 임계 구역 최소화.
 """
 
 import time	# 고해상도 단조 시계(monotonic clock) 측정을 위한 time 모듈 임포트
@@ -74,6 +79,11 @@ class MiniRedisStore:	# 미니 레디스 인메모리 저장소 핵심 엔진 �
         used_memory (int): 현재 저장된 키와 값들의 UTF-8 바이트 총합 (메모리 사용량).
         maxmemory (int): 허용된 최대 메모리 용량 (0인 경우 무제한).
         evicted_keys (int): 메모리 초과로 인해 LRU 정책에 의해 축출된 키의 누적 개수.
+        eviction_callback (callable or None): 축출 발생 시 (key, reclaimed_bytes)를 통지받는 콜백 훅.
+        eviction_log_enabled (bool): 축출 이력 로깅 활성화 플래그.
+        eviction_logs (list): 축출된 (key, reclaimed_bytes) 튜플 기록 리스트.
+        include_overhead (bool): used_memory 계산 시 고정 오버헤드 가산 여부.
+        entry_overhead_bytes (int): 엔트리당 고정 오버헤드 바이트 (기본값: 64).
     """
 
     def __init__(self):	# 저장소 엔진 초기화 생성자 정의
@@ -84,20 +94,30 @@ class MiniRedisStore:	# 미니 레디스 인메모리 저장소 핵심 엔진 �
         self.used_memory = 0	# 현재 사용 중인 바이트 메모리 총량을 0으로 초기화
         self.maxmemory = 0	# 최대 메모리 제한(0: 무제한)을 0으로 초기화
         self.evicted_keys = 0	# LRU로 축출된 누적 키 개수를 0으로 초기화
+        self.eviction_callback = None	# LRU 축출 발생 시 외부 호출 콜백 훅 초기화 (key, reclaimed_bytes)
+        self.eviction_log_enabled = False	# 축출 내역 로깅 활성화 여부 초기화
+        self.eviction_logs = []	# 축출된 키 및 회수 바이트 튜플 저장 리스트
+        self.include_overhead = False	# 메모리 계산 시 PyObject/노드 오버헤드 보정 포함 여부 (기본: 미포함)
+        self.entry_overhead_bytes = 64	# 엔트리당 가산할 고정 오버헤드 바이트 (기본값: 64B)
+        self._sweep_counter = 0	# 힙 컴팩트 자동 트리거용 스윕 호출 카운터
+        self.auto_compact_interval = 100	# 자동 힙 컴팩트 주기 (스윕 횟수 기준, 0이면 비활성화)
 
-    @staticmethod	# 정적 메서드 데코레이터 지정
-    def _entry_size(key, value):	# 키와 값의 UTF-8 바이트 총합을 계산하는 정적 메서드 정의
+    def _entry_size(self, key, value):	# 키와 값의 UTF-8 바이트 총합을 계산하는 메서드 정의
         """키와 값의 UTF-8 바이트 크기 총합을 계산합니다.
 
-        공식: len(utf8(key)) + len(utf8(value))
+        공식: len(utf8(key)) + len(utf8(value)) (+ include_overhead 활성화 시 entry_overhead_bytes)
 
         Args:
             key (str): 키 문자열.
             value (str): 값 문자열.
 
         Returns:
-            int: 두 문자열의 UTF-8 인코딩 바이트 합계 크기.
+            int: 두 문자열의 UTF-8 인코딩 바이트 합계 크기 (오버헤드 포함 여부 반영).
         """
+        raw_size = len(key.encode("utf-8")) + len(value.encode("utf-8"))	# UTF-8 인코딩 바이트 길이들의 합 계산
+        if getattr(self, "include_overhead", False):	# 오버헤드 보정 옵션이 활성화된 경우
+            return raw_size + getattr(self, "entry_overhead_bytes", 64)	# 고정 오버헤드 바이트 가산 반환
+        return raw_size	# 순수 UTF-8 바이트 크기 반환
         return len(key.encode("utf-8")) + len(value.encode("utf-8"))	# UTF-8 인코딩 바이트 길이들의 합 반환
 
     def _get_entry(self, key):	# 해시맵에서 키에 매핑된 Entry 객체를 안전하게 조회하는 내부 메서드 정의
@@ -119,6 +139,7 @@ class MiniRedisStore:	# 미니 레디스 인메모리 저장소 핵심 엔진 �
 
         힙 top의 expire_at이 현재 시각 이하인 동안 반복해서 꺼내며,
         엔트리의 expire_at 및 ttl_version이 일치하는 경우에만 유효한 만료로 간주하여 _purge합니다.
+        지정된 스윕 횟수에 도달하면 무효 엔트리를 수거하는 compact_ttl_heap을 자동 호출합니다.
 
         Args:
             now (float): 현재 단조 시계 타임스탬프.
@@ -128,6 +149,10 @@ class MiniRedisStore:	# 미니 레디스 인메모리 저장소 핵심 엔진 �
             entry = self._get_entry(key)	# 해당 키의 실제 엔트리 객체 조회
             if entry is not None and entry.expire_at == expire_at and entry.ttl_version == version:	# 엔트리가 존재하고 타임스탬프와 버전이 일치하는 경우
                 self._purge(key, entry)	# 해당 키와 엔트리를 모든 자료구조에서 영구 정리
+        self._sweep_counter += 1	# 스윕 호출 횟수 증가
+        if self.auto_compact_interval > 0 and self._sweep_counter >= self.auto_compact_interval:	# 자동 컴팩트 주기 도달 검사
+            self._sweep_counter = 0	# 카운터 리셋
+            self.compact_ttl_heap()	# 힙 무효 엔트리 정리 수행
 
     def _purge(self, key, entry):	# 키와 엔트리를 HashMap, LRU, 메모리 통계에서 완전히 제거하는 내부 메서드 정의
         """키와 엔트리를 모든 자료구조(해시맵, LRU 리스트) 및 메모리 카운트에서 완전히 제거합니다.
@@ -193,15 +218,21 @@ class MiniRedisStore:	# 미니 레디스 인메모리 저장소 핵심 엔진 �
 
         축출된 키는 LRU 리스트의 tail.prev에서 제거되며,
         해시맵에서 제거되고 evicted_keys 카운트가 1 증가합니다.
+        설정된 콜백 훅(eviction_callback) 및 로깅 옵션(eviction_logs)에 축출 내역을 전달합니다.
         """
         while self.maxmemory > 0 and self.used_memory > self.maxmemory and len(self._lru) > 0:	# 메모리가 초과되고 축출 가능한 키가 남아있는 동안 반복
             victim_key = self._lru.remove_back()	# LRU 리스트의 맨 뒤(가장 오래 사용되지 않은 키) 노드 제거 및 키 취득
             victim = self._get_entry(victim_key)	# 축출 대상 키의 엔트리 객체 조회
             if victim is None:	# 만약 엔트리가 존재하지 않는 경우 (예외 방어)
                 continue	# 다음 반복으로 진행
+            reclaimed_bytes = victim.size	# 회수된 엔트리의 바이트 크기 보관
             self._map.remove(victim_key)	# 해시맵에서 축출 대상 키 제거
-            self.used_memory -= victim.size	# 축출된 엔트리의 크기만큼 메모리 사용량 차감
+            self.used_memory -= reclaimed_bytes	# 축출된 엔트리의 크기만큼 메모리 사용량 차감
             self.evicted_keys += 1	# 누적 축출 키 개수 1 증가
+            if self.eviction_callback is not None:	# 축출 콜백 훅이 등록된 경우
+                self.eviction_callback(victim_key, reclaimed_bytes)	# 키와 회수된 바이트 전달
+            if self.eviction_log_enabled:	# 축출 로깅이 활성화된 경우
+                self.eviction_logs.append((victim_key, reclaimed_bytes))	# 로그 리스트에 기록
 
     def get(self, key):	# 키의 값을 조회하고 성공 시 LRU를 갱신하는 메서드 정의
         """키에 매핑된 값을 조회합니다.
@@ -321,3 +352,38 @@ class MiniRedisStore:	# 미니 레디스 인메모리 저장소 핵심 엔진 �
         if entry.expire_at is None:	# 키는 존재하나 만료 시간이 설정되지 않은 경우
             return -1	# -1 반환
         return int(entry.expire_at - now)	# 남은 초를 정수형으로 반환
+
+    def compact_ttl_heap(self):	# TTL 최소 힙의 무효 엔트리를 수거하여 컴팩트하는 메서드 정의
+        """Lazy deletion 및 키 덮어쓰기/삭제로 인해 힙에 누적된 무효 항목들을 정리합니다.
+
+        현재 해시맵에 실제로 존재하고 expire_at 및 ttl_version이 일치하는 유효 항목들만
+        선별하여 최소 힙을 새로 재구성함으로써 메모리 누수와 불필요한 힙 탐색을 방지합니다.
+
+        Returns:
+            int: 정리(제거)된 무효 힙 엔트리의 개수.
+        """
+        if self._ttl_heap.size() == 0:	# 힙이 비어있는 경우
+            return 0	# 정리 개수 0 반환
+        old_data = self._ttl_heap._data	# 기존 힙 배열 참조 보관
+        new_heap = MinHeap()	# 유효 항목만을 담을 새 최소 힙 인스턴스 생성
+        purged_count = 0	# 정리된 무효 항목 수 카운터 초기화
+        for expire_at, key, version in old_data:	# 기존 힙의 모든 엔트리 순회
+            entry = self._get_entry(key)	# 해시맵에서 엔트리 조회
+            if entry is not None and entry.expire_at == expire_at and entry.ttl_version == version:	# 유효한 엔트리인 경우
+                new_heap.push((expire_at, key, version))	# 새 힙에 보존
+            else:	# 이미 삭제되었거나 버전이 갱신되어 무효화된 엔트리인 경우
+                purged_count += 1	# 무효 항목 카운트 1 증가
+        self._ttl_heap = new_heap	# 컴팩트된 새 힙으로 교체
+        return purged_count	# 정리된 개수 반환
+
+    def dump_ttl_heap_top(self, n=5):	# 디버깅용으로 TTL 힙 상위 n개 항목을 덤프하는 메서드 정의
+        """디버깅 및 모니터링을 위해 TTL 최소 힙의 상위 최대 n개 항목을 반환합니다.
+
+        Args:
+            n (int): 덤프할 상위 항목 수 (기본값: 5).
+
+        Returns:
+            list: 상위 n개의 (expire_at, key, version) 튜플 리스트.
+        """
+        return self._ttl_heap.dump_top(n)	# MinHeap의 dump_top 결과 반환
+

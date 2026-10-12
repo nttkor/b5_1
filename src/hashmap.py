@@ -18,7 +18,7 @@
          이를 통해 평균 O(1) 시간 복잡도를 지속적으로 유지합니다.
 """
 
-from .doubly_linked_list import DoublyLinkedList	# 체이닝 버킷 구현을 위한 이중 연결 리스트 모듈 임포트
+from .doubly_linked_list import DoublyLinkedList, NodePool	# 체이닝 버킷 구현 및 노드 풀을 위한 모듈 임포트
 
 _LOAD_FACTOR_LIMIT = 0.75	# 버킷 리사이징 임계 로드 팩터 (75% 도달 시 2배 확장)
 _MISSING = object()	# get 메서드 호출 시 기본값 미지정 여부를 판별하기 위한 고유 센티넬 객체
@@ -70,22 +70,29 @@ class HashMap:	# 체이닝 및 동적 2배 확장을 지원하는 해시맵 클�
 
     내장 딕셔너리 없이 리스트 버킷과 DoublyLinkedList 체인을 결합하여
     평균 O(1) 시간 복잡도로 put, get, remove, contains 연산을 지원합니다.
+    선택적으로 NodePool을 연동하여 체인 노드의 잦은 할당 및 GC 오버헤드를 완화합니다.
 
     Attributes:
         _capacity (int): 현재 할당된 총 버킷 배열의 크기.
         _buckets (list[DoublyLinkedList]): 각 버킷마다 생성된 이중 연결 리스트 체인들의 배열.
         _size (int): 해시맵에 저장된 총 키-값 쌍의 개수.
+        _pool (NodePool or None): 버킷 노드 재사용 풀 인스턴스.
+        rehash_history (list): 리해시 전후의 체인 분포 통계 이력을 보관하는 디버그 리스트.
     """
 
-    def __init__(self, capacity=8):	# 해시맵 생성자 정의 (기본 용량: 8)
+    def __init__(self, capacity=8, use_node_pool=False, node_pool_size=1024):	# 해시맵 생성자 정의
         """해시맵을 초기화하고 지정된 용량의 버킷 배열을 할당합니다.
 
         Args:
             capacity (int): 초기 버킷 배열의 크기 (기본값: 8).
+            use_node_pool (bool): 노드 재사용 풀 사용 여부 (기본값: False).
+            node_pool_size (int): 노드 풀의 최대 유휴 노드 용량 (기본값: 1024).
         """
         self._capacity = capacity	# 초기 버킷 수 저장
-        self._buckets = [DoublyLinkedList() for _ in range(capacity)]	# 각 버킷마다 독립된 이중 연결 리스트 객체 생성
+        self._pool = NodePool(max_size=node_pool_size) if use_node_pool else None	# 노드 재사용 풀 생성 또는 None
+        self._buckets = [DoublyLinkedList(pool=self._pool) for _ in range(capacity)]	# 각 버킷마다 독립된 이중 연결 리스트 객체 생성
         self._size = 0	# 저장된 총 키-값 엔트리 개수 0으로 초기화
+        self.rehash_history = []	# 리해시 전후 체인 길이 분포 통계 이력 리스트 초기화
 
     def put(self, key, value):	# 키-값 쌍을 저장하거나 기존 키의 값을 갱신하는 메서드 정의
         """지정된 키에 값을 매핑하여 저장합니다.
@@ -185,19 +192,51 @@ class HashMap:	# 체이닝 및 동적 2배 확장을 지원하는 해시맵 클�
         """
         return self._size	# 유지 중인 크기 변수 반환
 
+    def get_chain_distribution(self):	# 모든 버킷의 체인 길이를 수집하여 반환하는 메서드 정의
+        """각 해시 버킷에 연결된 체인 길이(노드 수)의 리스트를 반환합니다.
+
+        해시 충돌 분포 및 편향성을 진단하기 위한 디버깅 및 분석용 메서드입니다.
+
+        Returns:
+            list[int]: 각 버킷 인덱스별 체인 길이 목록.
+        """
+        return [len(bucket) for bucket in self._buckets]	# 모든 버킷의 노드 개수 리스트 반환
+
+    def get_chain_stats(self):	# 체인 길이의 통계적 요약 정보를 반환하는 메서드 정의
+        """체인 길이의 최대값, 빈 버킷 개수, 평균 체인 길이 등 요약 통계를 반환합니다.
+
+        Returns:
+            tuple: (capacity, size, empty_buckets, max_chain, avg_chain) 통계 튜플.
+        """
+        dist = self.get_chain_distribution()	# 현재 버킷별 체인 길이 수집
+        empty_cnt = 0	# 빈 버킷 카운터 초기화
+        max_chain = 0	# 최대 체인 길이 초기화
+        for length in dist:	# 각 버킷 길이 순회
+            if length == 0:	# 체인이 비어있는 경우
+                empty_cnt += 1	# 빈 버킷 수 1 증가
+            if length > max_chain:	# 최대 길이 갱신 조건
+                max_chain = length	# 최대 체인 길이 갱신
+        avg_chain = (self._size / self._capacity) if self._capacity > 0 else 0.0	# 평균 체인 길이 계산
+        return (self._capacity, self._size, empty_cnt, max_chain, avg_chain)	# 통계 튜플 반환
+
     def _resize(self, new_capacity):	# 버킷 배열을 새 용량으로 확장하고 전체 재해싱을 수행하는 내부 메서드 정의
         """버킷 배열 크기를 new_capacity로 확장하고 모든 기존 데이터를 재해싱하여 재배치합니다.
 
         로드 팩터가 임계값을 넘을 때 호출되어 체인 길이를 짧게 유지함으로써
         해시맵의 조회/삽입 성능이 O(1)을 유지하도록 보장합니다.
+        리해시 전후의 체인 통계를 수집하여 rehash_history에 기록합니다.
 
         Args:
             new_capacity (int): 새로 확장할 버킷 배열의 크기.
         """
+        pre_stats = self.get_chain_stats()	# 리해시 전 체인 분포 통계 수집
         old_buckets = self._buckets	# 기존 버킷 배열에 대한 참조 보관
-        self._buckets = [DoublyLinkedList() for _ in range(new_capacity)]	# 새 용량 크기의 빈 버킷 배열 새로 생성
+        self._buckets = [DoublyLinkedList(pool=self._pool) for _ in range(new_capacity)]	# 새 용량 크기의 빈 버킷 배열 새로 생성 (풀 유지)
         self._capacity = new_capacity	# 버킷 용량 변수 갱신
         for bucket in old_buckets:	# 기존의 모든 버킷을 순회
             for pair in bucket:	# 기존 버킷 체인 내의 각 키-값 쌍 순회
                 idx = _hash_key(pair.key, new_capacity)	# 새로운 버킷 크기를 기준으로 새 버킷 인덱스 계산
                 self._buckets[idx].insert_back(pair)	# 새 버킷 체인의 맨 뒤에 키-값 쌍 재배치
+        post_stats = self.get_chain_stats()	# 리해시 후 체인 분포 통계 수집
+        self.rehash_history.append((len(old_buckets), new_capacity, pre_stats, post_stats))	# 리해시 이력에 전후 통계 튜플 기록
+

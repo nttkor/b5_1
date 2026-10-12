@@ -37,39 +37,107 @@ class Node:	# 이중 연결 리스트의 기본 단위 노드 클래스 정의
         self.next = None	# 다음 노드에 대한 참조를 None으로 초기화
 
 
+class NodePool:	# 잦은 노드 생성 및 GC 부담 완화를 위한 노드 재사용 풀 클래스 정의
+    """이중 연결 리스트 노드의 잦은 메모리 할당/해제 오버헤드를 완화하는 재사용 풀.
+
+    고정 크기의 유휴 노드 배열을 프리 리스트로 유지하여 삭제된 Node 객체를 재사용함으로써
+    파이썬 가비지 컬렉션(GC) 압박과 객체 할당 비용을 절감합니다.
+
+    Attributes:
+        _pool (list[Node]): 재사용 가능한 유휴 노드 객체들을 보관하는 내부 배열.
+        _max_size (int): 풀에 보관할 수 있는 최대 유휴 노드 수 한도.
+    """
+
+    __slots__ = ("_pool", "_max_size")	# 슬롯 최적화
+
+    def __init__(self, max_size=1024):	# 노드 풀 생성자 정의
+        """NodePool 인스턴스를 초기화합니다.
+
+        Args:
+            max_size (int): 풀에 유지할 수 있는 최대 유휴 노드 개수 (기본값: 1024).
+        """
+        self._pool = []	# 유휴 노드를 보관할 내부 리스트 초기화
+        self._max_size = max_size	# 풀 최대 용량 한도 설정
+
+    def acquire(self, data=None):	# 풀에서 노드를 인출하거나 새로 생성하는 메서드 정의
+        """재사용 가능한 노드를 풀에서 인출하거나, 비어 있으면 새 노드를 생성합니다.
+
+        Args:
+            data: 노드에 저장할 데이터 객체 (기본값: None).
+
+        Returns:
+            Node: 초기화된 노드 인스턴스.
+        """
+        if self._pool:	# 풀에 재사용 가능한 노드가 존재하는 경우
+            node = self._pool.pop()	# 풀에서 노드 1개 인출
+            node.data = data	# 데이터 설정
+            node.prev = None	# 이전 참조 초기화
+            node.next = None	# 다음 참조 초기화
+            return node	# 재사용 노드 반환
+        return Node(data)	# 풀이 비어있으면 새 노드 인스턴스 생성 반환
+
+    def release(self, node):	# 사용 완료된 노드를 풀에 반환하는 메서드 정의
+        """사용이 끝난 노드의 참조를 해제하고 풀의 용량 한도 내에서 반환 보관합니다.
+
+        Args:
+            node (Node): 반환할 대상 노드 인스턴스.
+        """
+        if len(self._pool) < self._max_size:	# 풀의 최대 용량을 초과하지 않는 경우
+            node.data = None	# 데이터 참조 해제
+            node.prev = None	# 이전 포인터 참조 해제
+            node.next = None	# 다음 포인터 참조 해제
+            self._pool.append(node)	# 풀 배열에 노드 보관
+
+    def size(self):	# 현재 풀에 보관 중인 유휴 노드 개수를 반환하는 메서드 정의
+        """현재 풀에 보관된 유휴 노드의 개수를 반환합니다.
+
+        Returns:
+            int: 유휴 노드 개수.
+        """
+        return len(self._pool)	# 풀 내부 배열 길이 반환
+
+
 class DoublyLinkedList:	# O(1) 양방향 연결 리스트 클래스 정의
     """더미 센티넬 노드를 기반으로 O(1) 삽입/삭제/이동을 보장하는 이중 연결 리스트.
 
     내부적으로 _head와 _tail 더미 노드를 상시 유지하여,
     헤드 삽입, 테일 삽입, 임의 노드 삭제 및 헤드 이동 연산 시
     별도의 null 분기 처리 없이 일관되게 O(1)에 수행합니다.
+    선택적으로 NodePool을 주입받아 노드 재사용 최적화를 수행할 수 있습니다.
 
     Attributes:
         _head (Node): 리스트의 시작을 나타내는 더미 센티넬 노드.
         _tail (Node): 리스트의 끝을 나타내는 더미 센티넬 노드.
         _size (int): 리스트 내에 저장된 실제 유효 노드의 총 개수.
+        _pool (NodePool or None): 노드 할당/해제 재사용 풀 인스턴스.
     """
 
-    def __init__(self):	# 이중 연결 리스트 초기화 생성자 정의
-        """센티넬 head와 tail 노드를 연결하고 빈 리스트 상태로 초기화합니다."""
+    def __init__(self, pool=None):	# 이중 연결 리스트 초기화 생성자 정의
+        """센티넬 head와 tail 노드를 연결하고 빈 리스트 상태로 초기화합니다.
+
+        Args:
+            pool (NodePool, optional): 노드 재사용 풀 인스턴스 (기본값: None).
+        """
         self._head = Node()	# 더미 head 센티넬 노드 인스턴스 생성
         self._tail = Node()	# 더미 tail 센티넬 노드 인스턴스 생성
         self._head.next = self._tail	# head의 다음 포인터를 tail로 연결
         self._tail.prev = self._head	# tail의 이전 포인터를 head로 연결
         self._size = 0	# 유효 데이터 노드 개수를 0으로 초기화
+        self._pool = pool	# 노드 재사용 풀 참조 저장
 
     def insert_front(self, data):	# 리스트의 맨 앞(head 직후)에 새 데이터를 삽입하는 메서드 정의
         """리스트의 가장 앞부분(_head 직후)에 새 데이터를 담은 노드를 O(1)로 삽입합니다.
 
         LRU 캐시에서 새로운 키가 삽입되거나 최신 사용 상태로 갱신될 때 호출됩니다.
+        노드 풀이 연결된 경우 풀에서 유휴 노드를 재사용하여 할당합니다.
 
         Args:
             data: 리스트 맨 앞에 저장할 데이터 객체.
 
         Returns:
-            Node: 새롭게 생성되어 리스트에 연결된 노드 인스턴스.
+            Node: 새롭게 생성 또는 재사용되어 리스트에 연결된 노드 인스턴스.
         """
-        node = Node(data)	# 입력받은 데이터를 보관하는 새 노드 객체 생성
+        node = self._pool.acquire(data) if self._pool is not None else Node(data)	# 풀 인출 또는 새 노드 생성
         self._link_after(self._head, node)	# 더미 head 노드 바로 뒤에 새 노드를 O(1)로 링크
         self._size += 1	# 리스트의 노드 개수 1 증가
         return node	# 생성 및 삽입된 노드 객체 반환
@@ -77,13 +145,15 @@ class DoublyLinkedList:	# O(1) 양방향 연결 리스트 클래스 정의
     def insert_back(self, data):	# 리스트의 맨 뒤(tail 직전)에 새 데이터를 삽입하는 메서드 정의
         """리스트의 가장 뒷부분(_tail 직전)에 새 데이터를 담은 노드를 O(1)로 삽입합니다.
 
+        노드 풀이 연결된 경우 풀에서 유휴 노드를 재사용하여 할당합니다.
+
         Args:
             data: 리스트 맨 뒤에 저장할 데이터 객체.
 
         Returns:
-            Node: 새롭게 생성되어 리스트에 연결된 노드 인스턴스.
+            Node: 새롭게 생성 또는 재사용되어 리스트에 연결된 노드 인스턴스.
         """
-        node = Node(data)	# 입력받은 데이터를 보관하는 새 노드 객체 생성
+        node = self._pool.acquire(data) if self._pool is not None else Node(data)	# 풀 인출 또는 새 노드 생성
         self._link_after(self._tail.prev, node)	# 현재 tail 직전 노드 뒤(즉 tail 앞)에 새 노드를 O(1)로 링크
         self._size += 1	# 리스트의 노드 개수 1 증가
         return node	# 생성 및 삽입된 노드 객체 반환
@@ -118,14 +188,18 @@ class DoublyLinkedList:	# O(1) 양방향 연결 리스트 클래스 정의
         """주어진 임의의 노드를 리스트에서 O(1)로 분리하여 제거합니다.
 
         센티넬 노드 구조 덕분에 앞뒤 노드가 항상 존재하므로 경계 조건 검사가 불필요합니다.
+        풀이 지정되어 있으면 분리 후 풀에 노드를 반환하여 재사용할 수 있도록 합니다.
 
         Args:
             node (Node): 리스트에서 제거할 대상 노드 인스턴스.
         """
         node.prev.next = node.next	# 이전 노드의 다음 포인터를 현재 노드의 다음 노드로 연결
         node.next.prev = node.prev	# 다음 노드의 이전 포인터를 현재 노드의 이전 노드로 연결
-        node.prev = None	# 참조 해제를 위해 현재 노드의 이전 포인터를 None으로 초기화
-        node.next = None	# 참조 해제를 위해 현재 노드의 다음 포인터를 None으로 초기화
+        if self._pool is not None:	# 노드 풀이 지정되어 있는 경우
+            self._pool.release(node)	# 노드를 풀에 반환하여 재사용 대기
+        else:	# 노드 풀이 없는 일반 모드인 경우
+            node.prev = None	# 참조 해제를 위해 현재 노드의 이전 포인터를 None으로 초기화
+            node.next = None	# 참조 해제를 위해 현재 노드의 다음 포인터를 None으로 초기화
         self._size -= 1	# 리스트의 노드 개수 1 감소
 
     def move_to_front(self, node):	# 지정된 노드를 리스트의 맨 앞(head 직후)으로 이동시키는 메서드 정의

@@ -2,7 +2,7 @@
 
 import time
 
-from src.doubly_linked_list import DoublyLinkedList
+from src.doubly_linked_list import DoublyLinkedList, NodePool
 from src.hashmap import HashMap
 from src.heap import MinHeap
 from src.store import MiniRedisStore, OOMError
@@ -111,6 +111,134 @@ def test_cli_error_paths():
     assert execute_command(store, "KEYS") == '1. "user:1"'
     execute_command(store, "CONFIG SET maxmemory 5")
     assert execute_command(store, "SET k toolongvalue") == "(error) OOM command not allowed when used_memory > 'maxmemory'"
+
+
+def test_quoted_and_whitespace_values():
+    store = MiniRedisStore()
+    assert execute_command(store, 'SET "my key" "hello world with spaces"') == "OK"
+    assert execute_command(store, 'GET "my key"') == '"hello world with spaces"'
+    assert execute_command(store, "SET single 'quoted value'") == "OK"
+    assert execute_command(store, "GET single") == '"quoted value"'
+    assert execute_command(store, 'SET empty ""') == "OK"
+    assert execute_command(store, "GET empty") == '""'
+    assert execute_command(store, 'SET bad "unclosed') == "(error) ERR unbalanced quotes"
+
+
+def test_node_pool_reuse():
+    pool = NodePool(max_size=5)
+    dll = DoublyLinkedList(pool=pool)
+    n1 = dll.insert_front("data1")
+    n2 = dll.insert_back("data2")
+    assert pool.size() == 0
+    dll.remove_node(n1)
+    assert pool.size() == 1
+    dll.remove_node(n2)
+    assert pool.size() == 2
+    n3 = dll.insert_front("data3")
+    assert pool.size() == 1
+    assert n3.data == "data3"
+
+    hm = HashMap(capacity=4, use_node_pool=True)
+    hm.put("k1", "v1")
+    hm.put("k2", "v2")
+    assert hm.remove("k1") is True
+    assert hm._pool.size() >= 1
+
+
+def test_hashmap_chain_distribution():
+    hm = HashMap(capacity=4)
+    for i in range(10):
+        hm.put(f"key-{i}", f"val-{i}")
+    dist = hm.get_chain_distribution()
+    stats = hm.get_chain_stats()
+    assert len(dist) == stats[0]
+    assert stats[1] == 10
+    assert len(hm.rehash_history) > 0
+    old_cap, new_cap, pre, post = hm.rehash_history[0]
+    assert new_cap > old_cap
+    assert len(pre) == 5
+    assert len(post) == 5
+
+
+def test_min_heap_dump_top():
+    heap = MinHeap()
+    for item in [(10, "ten"), (2, "two"), (5, "five"), (1, "one")]:
+        heap.push(item)
+    dumped = heap.dump_top(3)
+    assert len(dumped) == 3
+    assert [d[1] for d in dumped] == ["one", "two", "five"]
+    assert heap.size() == 4
+
+    store = MiniRedisStore()
+    store.set("k1", "v1")
+    store.expire("k1", 50)
+    store.set("k2", "v2")
+    store.expire("k2", 10)
+    store_dump = store.dump_ttl_heap_top(2)
+    assert len(store_dump) == 2
+    assert store_dump[0][1] == "k2"
+
+
+def test_eviction_logging_and_callback():
+    store = MiniRedisStore()
+    store.maxmemory = 20
+    logged = []
+    store.eviction_callback = lambda key, reclaimed: logged.append((key, reclaimed))
+    store.eviction_log_enabled = True
+
+    store.set("k1", "12345678")  # size 10
+    store.set("k2", "12345678")  # size 10, used 20
+    store.set("k3", "12345678")  # size 10, used 30 -> evict k1
+    assert len(logged) == 1
+    assert logged[0] == ("k1", 10)
+    assert store.eviction_logs == [("k1", 10)]
+
+
+def test_heap_compaction():
+    store = MiniRedisStore()
+    store.set("a", "1")
+    store.expire("a", 100)
+    assert store._ttl_heap.size() == 1
+    store.set("a", "2")  # overwrite invalidates old heap tuple
+    assert store._ttl_heap.size() == 1
+    store.set("b", "1")
+    store.expire("b", 200)
+    assert store._ttl_heap.size() == 2
+
+    purged = store.compact_ttl_heap()
+    assert purged == 1
+    assert store._ttl_heap.size() == 1
+
+
+def test_memory_overhead_correction():
+    store = MiniRedisStore()
+    store.include_overhead = True
+    store.entry_overhead_bytes = 64
+    store.set("k", "v")
+    assert store.used_memory == 2 + 64
+    store.maxmemory = 65
+    try:
+        store.set("k2", "v2")
+        assert False, "OOM expected"
+    except OOMError:
+        pass
+
+
+def test_cli_verbose_info_and_error_context():
+    store = MiniRedisStore()
+    store.set("user:1", "Alice")
+    normal_info = execute_command(store, "INFO memory")
+    assert "valid_keys" not in normal_info
+
+    verbose_info = execute_command(store, "INFO memory verbose")
+    assert "valid_keys:1" in verbose_info
+    assert "heap_size:" in verbose_info
+
+    execute_command(store, "CONFIG SET maxmemory 5")
+    err_msg = execute_command(store, "SET key toolongvalue", verbose_error=True)
+    assert "used_memory=" in err_msg
+    assert "maxmemory=5" in err_msg
+
 
 
 if __name__ == "__main__":

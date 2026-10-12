@@ -12,8 +12,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # 주요 파일별 설명 및 역할 메타데이터
 FILE_METADATA = {
     "main.py": ("CLI 진입점", "run_repl() 실행 및 Mini Redis REPL 구동"),
-    "test_mini_redis.py": ("전체 자체 검증 테스트", "8개 단위/통합 테스트 (자료구조, LRU, TTL, OOM, CLI 에러)"),
-    "src/doubly_linked_list.py": ("이중 연결 리스트", "DoublyLinkedList, Node (Sentinel 기반 O(1) 삽입/삭제/이동)"),
+    "test_mini_redis.py": ("전체 자체 검증 테스트", "16개 단위/통합 테스트 (자료구조, LRU, TTL, OOM, 풀링, 덤프, 메트릭 등 100% PASS)"),
+    "utils/benchmark_rehash.py": ("대규모 성능 벤치마크 도구", "10k~100k 해시맵 리사이징 및 처리율 실측 도구"),
+    "src/doubly_linked_list.py": ("이중 연결 리스트", "DoublyLinkedList, Node, NodePool (Sentinel 기반 O(1) 및 노드 풀)"),
     "src/hashmap.py": ("체이닝 해시맵", "HashMap, _Pair (djb2 해시, 로드팩터 0.75 리사이즈)"),
     "src/heap.py": ("최소 힙", "MinHeap (_heapify_up, _heapify_down, TTL 만료 관리용)"),
     "src/store.py": ("핵심 스토리지 엔진", "MiniRedisStore (LRU 제거, Lazy deletion TTL, used_memory 계산)"),

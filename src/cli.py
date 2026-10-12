@@ -119,19 +119,23 @@ def _parse_int(token):	# 문자열 토큰을 안전하게 정수로 변환하는
         return None	# None 반환
 
 
-def execute_command(store, line):	# 단일 명령어 라인을 파싱하고 실행하여 결과를 포맷팅하는 함수 정의
+def execute_command(store, line, verbose_error=False, verbose_info=False):	# 단일 명령어 라인을 파싱하고 실행하여 결과를 포맷팅하는 함수 정의
     """한 줄의 명령어를 파싱하여 저장소에서 실행하고 결과 문자열을 반환합니다.
 
     REPL 환경과 테스트 스위트 양쪽에서 공통으로 호출되는 진입점 함수입니다.
     빈 줄인 경우 None을 반환하며, 종료 명령인 경우 EXIT_SENTINEL을 반환합니다.
+    선택적으로 에러 컨텍스트(verbose_error) 및 보조 지표(verbose_info)를 활성화할 수 있습니다.
 
     Args:
         store (MiniRedisStore): 명령을 실행할 저장소 엔진 인스턴스.
         line (str): 사용자가 입력한 명령어 문자열.
+        verbose_error (bool): 에러 발생 시 내부 상태 컨텍스트 덧붙임 여부 (기본값: False).
+        verbose_info (bool): INFO memory 시 유효 키 수 등 보조 지표 포함 여부 (기본값: False).
 
     Returns:
         str or None: 실행 결과 문자열, 종료 센티넬, 또는 빈 줄일 경우 None.
     """
+    is_verbose_err = verbose_error or getattr(store, "verbose_error", False)	# 에러 컨텍스트 활성화 여부 판별
     line = line.strip()	# 입력 문자열 앞뒤의 불필요한 공백 제거
     if not line:	# 빈 문자열인 경우
         return None	# None 반환
@@ -150,6 +154,8 @@ def execute_command(store, line):	# 단일 명령어 라인을 파싱하고 실�
         try:	# 엔트리 저장 시도 예외 블록 시작
             store.set(tokens[1], tokens[2])	# 키와 값을 저장소에 저장 (LRU 및 OOM 검사 포함)
         except OOMError:	# 단일 엔트리 크기가 maxmemory를 초과한 경우
+            if is_verbose_err:	# 에러 컨텍스트 옵션 활성화 시
+                return _fmt_err(f"{ERR_OOM} (used_memory={store.used_memory}, maxmemory={store.maxmemory})")	# 상태 컨텍스트 첨부
             return _fmt_err(ERR_OOM)	# OOM 에러 메시지 반환
         return _fmt_ok()	# 성공 시 OK 응답 반환
 
@@ -184,14 +190,29 @@ def execute_command(store, line):	# 단일 명령어 라인을 파싱하고 실�
             return _fmt_err(ERR_UNKNOWN.format(cmd))	# 일치하지 않으면 알 수 없는 명령 에러 반환
         bytes_value = _parse_int(tokens[3])	# 설정할 바이트 크기 토큰을 정수로 파싱
         if bytes_value is None or bytes_value < 0:	# 정수가 아니거나 음수인 경우
+            if is_verbose_err:	# 에러 컨텍스트 활성화 시
+                return _fmt_err(f"{ERR_NOT_INT} (given='{tokens[3]}')")	# 입력값 컨텍스트 첨부
             return _fmt_err(ERR_NOT_INT)	# 정수 범위 오류 에러 반환
         store.maxmemory = bytes_value	# 저장소의 maxmemory 제한값 설정
         return _fmt_ok()	# 성공 시 OK 응답 반환
 
     if cmd == "INFO":	# INFO 명령어 처리 분기
-        if len(tokens) != 2 or tokens[1].lower() != "memory":	# INFO memory 인자 형식 일치 검사
+        if len(tokens) not in (2, 3) or tokens[1].lower() != "memory":	# INFO memory 인자 형식 일치 검사
             return _fmt_err(ERR_UNKNOWN.format(cmd))	# 일치하지 않으면 알 수 없는 명령 에러 반환
-        return (	# 3개 메모리 통계 지표를 지정된 형식으로 포맷팅하여 반환
+        is_verbose_inf = (	# 보조 지표 출력 여부 판별
+            verbose_info
+            or getattr(store, "verbose_info", False)
+            or (len(tokens) == 3 and tokens[2].lower() in ("verbose", "full", "all"))
+        )
+        if is_verbose_inf:	# 보조 지표 포함 모드인 경우
+            return (	# 5개 상세 모니터링 메트릭 반환
+                f"used_memory:{store.used_memory}\n"
+                f"maxmemory:{store.maxmemory}\n"
+                f"evicted_keys:{store.evicted_keys}\n"
+                f"valid_keys:{store.dbsize()}\n"
+                f"heap_size:{store._ttl_heap.size()}"
+            )
+        return (	# 3개 표준 메모리 통계 지표를 지정된 형식으로 포맷팅하여 반환
             f"used_memory:{store.used_memory}\n"	# 현재 사용 중인 총 바이트 메모리
             f"maxmemory:{store.maxmemory}\n"	# 설정된 최대 메모리 한도
             f"evicted_keys:{store.evicted_keys}"	# LRU로 축출된 총 키 개수
@@ -202,6 +223,8 @@ def execute_command(store, line):	# 단일 명령어 라인을 파싱하고 실�
             return _fmt_err(ERR_ARGS.format(cmd))	# 인자 개수 불일치 에러 반환
         seconds = _parse_int(tokens[2])	# 만료 초 토큰을 정수로 파싱
         if seconds is None:	# 정수가 아닌 경우
+            if is_verbose_err:	# 에러 컨텍스트 활성화 시
+                return _fmt_err(f"{ERR_NOT_INT} (given='{tokens[2]}')")	# 입력값 컨텍스트 첨부
             return _fmt_err(ERR_NOT_INT)	# 정수 오류 에러 반환
         return _fmt_int(1 if store.expire(tokens[1], seconds) else 0)	# 만료 설정 성공 시 1, 키 없음 시 0 반환
 

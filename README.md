@@ -28,7 +28,7 @@ Python의 내장 컬렉션인 **`dict`, `set`, `collections`를 일체 사용하
 | **개발 언어** | Python 3.8 이상 (테스트 및 검증: **Python 3.12**) |
 | **외부 의존성** | 없음 (표준 라이브러리 `time`, `shlex`만 사용) |
 | **코드베이스 제약** | `dict`, `set`, `collections` 일체 사용 금지 (순수 자료구조 직접 구현) |
-| **테스트 스위트** | `python3 test_mini_redis.py` (8개 단위/통합 테스트 **100% PASS**) |
+| **테스트 스위트** | `python3 test_mini_redis.py` (16개 단위/통합 테스트 **100% PASS**) |
 
 ---
 
@@ -84,7 +84,15 @@ ok - test_single_entry_oom
 ok - test_ttl_expiry_and_overwrite_clears_ttl
 ok - test_delete_removes_from_all_structures
 ok - test_cli_error_paths
-All 8 tests passed.
+ok - test_quoted_and_whitespace_values
+ok - test_node_pool_reuse
+ok - test_hashmap_chain_distribution
+ok - test_min_heap_dump_top
+ok - test_eviction_logging_and_callback
+ok - test_heap_compaction
+ok - test_memory_overhead_correction
+ok - test_cli_verbose_info_and_error_context
+All 16 tests passed.
 ```
 
 ### ③ 하네스 엔지니어링 검증 도구 실행
@@ -174,6 +182,31 @@ flowchart LR
 - **버전 기반 지연 삭제 (Lazy Deletion with Versioning)**: 키 덮어쓰기/삭제 시 `entry.ttl_version`을 1씩 올려 이전 힙 예약을 무효화하고, `_sweep_expired` 시점에 버전이 일치하는 항목만 물리 삭제(`_purge`).
 - **메모리 회계 및 축출 파이프라인**: `used_memory = sum(len(utf8(key)) + len(utf8(value)))`를 엄격히 산정하고, 단일 엔트리 한도 초과 시 즉시 `OOMError`를 발생시키며, `used_memory > maxmemory` 시 LRU 테일(가장 오래된 키)부터 순차 축출.
 
+### 5) GET 실행 및 LRU 최신화 시퀀스 다이어그램 (Sequence Diagram)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as 사용자 CLI
+    participant Store as MiniRedisStore
+    participant Heap as MinHeap (TTL)
+    participant Map as HashMap
+    participant LRU as DoublyLinkedList (LRU)
+
+    Client->>Store: GET key
+    Store->>Heap: sweep_expired(now)
+    Heap-->>Store: 만료된 예약 튜플 pop 및 정리
+    Store->>Map: get_entry(key)
+    alt 키 미존재 또는 만료 삭제됨
+        Map-->>Store: None 반환
+        Store-->>Client: (nil)
+    else 키 유효하게 존재함
+        Map-->>Store: Entry(value, lru_node) 반환
+        Store->>LRU: move_to_front(entry.lru_node)
+        LRU-->>Store: O(1) MRU 헤드 최신화 완료
+        Store-->>Client: "value" 반환
+    end
+```
+
 ---
 
 ## 📋 6. 지원 명령어 세트 및 Redis 프로토콜 규격
@@ -192,13 +225,29 @@ flowchart LR
 | 명령어 | 문법 | 설명 | 반환 예시 |
 | :--- | :--- | :--- | :--- |
 | **CONFIG SET** | `CONFIG SET maxmemory <bytes>` | 최대 메모리 한도 설정 (0: 무제한) | `OK` |
-| **INFO memory** | `INFO memory` | 현재 메모리 사용량, 최대 한도, 누적 축출 키 개수 출력 | `used_memory:N\nmaxmemory:N\nevicted_keys:N` |
+| **INFO memory** | `INFO memory [verbose]` | 현재 메모리 통계 출력 (verbose 옵션 시 valid_keys, heap_size 보조지표 포함) | `used_memory:N\nmaxmemory:N\nevicted_keys:N` |
 
-### 3) TTL 관리 명령어 (2개)
+### 3) TTL 관리 명령어 및 반올림/절사 정책
 | 명령어 | 문법 | 설명 | 반환 예시 |
 | :--- | :--- | :--- | :--- |
 | **EXPIRE** | `EXPIRE key <seconds>` | 키의 만료 시간(초) 설정 (0 이하 즉시 삭제) | `(integer) 1` 또는 `(integer) 0` |
-| **TTL** | `TTL key` | 남은 만료 시간 조회 | `(integer) -2` (키 없음), `-1` (만료시간 없음), `N` (잔여초) |
+| **TTL** | `TTL key` | 남은 만료 시간 조회 (-2: 미존재/만료, -1: 무제한, >=0: 잔여초) | `(integer) 2` 또는 `(integer) -2` |
+
+> [!NOTE] **TTL 반환값의 정수 절사(Floor / Truncation toward zero) 정책**  
+> Mini Redis의 TTL 잔여 시간 계산 공식은 `int(entry.expire_at - now)`입니다.  
+> CPython의 `int()` 캐스팅은 소수점 이하를 버리는 **내림/절사(Floor / Truncation)** 방식을 적용합니다.  
+> - 예: 만료까지 `2.9초` 남은 경우 `int(2.9) = 2` 반환  
+> - 예: 만료까지 `0.4초` 남은 경우 `int(0.4) = 0` 반환 (키가 아직 유효함을 표시)  
+> - `now >= expire_at`이 되는 순간 선행 `_sweep_expired`에 의해 키가 즉시 제거되어 `(integer) -2`를 반환합니다.
+
+### 4) 고도화 및 엔터프라이즈 모니터링 옵션
+- **노드 재사용 풀 (`NodePool`)**: `DoublyLinkedList` 및 `HashMap` 버킷에서 잦은 노드 할당과 GC 부하를 완화하는 프리 리스트 풀링 옵션 지원.
+- **체인 길이 분포 진단 (`get_chain_distribution`, `get_chain_stats`)**: 리해시 전후 체인 길이 히스토그램 및 충돌 편향 통계 수집.
+- **TTL 최소 힙 덤프 (`dump_ttl_heap_top`)**: 힙 구조 손상 없이 최단 만료 예약 상위 N개 엔트리 정렬 덤프 지원.
+- **LRU 축출 로깅 및 콜백 훅 (`eviction_callback`, `eviction_log_enabled`)**: 축출된 키 및 회수된 바이트 수 실시간 통지/추적.
+- **무효 힙 엔트리 주기적 컴팩트 (`compact_ttl_heap`)**: Lazy Deletion 누적으로 인한 무효 튜플 일괄 수거 및 힙 재구성.
+- **오버헤드 보정 메모리 모델 (`include_overhead`)**: `PyObject_HEAD` 및 노드 고정 오버헤드(64B) 가산 모드 지원.
+
 
 ### 4) 세션 제어 및 에러 표준
 - **세션 종료**: `exit` 또는 `quit`
